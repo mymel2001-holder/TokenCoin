@@ -113,3 +113,4 @@ The TokenCoin client is a unified, user-friendly desktop and mobile application 
 ## **8\. Important things not to forget.**
 
 * .gitignore (put any private files and junk here, such as installed 3rd party dependencies within project structure and .env - but not any equivalent to stuff such as (but not limited to): package.json, index.js, or main.py)
+* Create it in a combination of Python3 and optionally C++ (if it helps)
