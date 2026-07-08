@@ -1,7 +1,7 @@
 # **System Design Document: TokenCoin (TKC)**
 
 **Author:** Sammy Lord  
-**Status:** Draft / Proposal  
+**Status:** Implementation Document  
 **Date:** July 2026
 
 ## **1\. Executive Summary**
