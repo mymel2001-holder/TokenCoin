@@ -421,14 +421,13 @@ TokenCoin uses **Ollama** for Proof-of-Useful-Work mining. Ollama runs on CPU, N
 ### Install Ollama
 
 ```bash
-# macOS
-brew install ollama
-
-# Linux
+# macOS/Linux
 curl -fsSL https://ollama.com/install.sh | sh
+```
 
+```powershell
 # Windows
-# Download from https://ollama.com/download
+irm https://ollama.com/install.ps1 | iex
 ```
 
 ### Start Ollama
