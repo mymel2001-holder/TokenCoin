@@ -162,14 +162,13 @@ python setup.py build_ext --inplace
 TokenCoin uses **Ollama** for AI inference mining. Install it from [ollama.com](https://ollama.com):
 
 ```bash
-# macOS
-brew install ollama
-
-# Linux
+# macOS/Linux
 curl -fsSL https://ollama.com/install.sh | sh
+```
 
+```powershell
 # Windows
-# Download from https://ollama.com/download
+irm https://ollama.com/install.ps1 | iex
 ```
 
 ### CLI Usage
