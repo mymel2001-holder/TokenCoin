@@ -107,8 +107,8 @@ Every wallet is also a full node. There are **no central bootstrap nodes**, no c
 | **Base Supply** | 6.4B TKC |
 | **Initial Block Reward** | 12 TKC |
 | **Block Time** | 5 minutes (300 seconds) |
-| **Halving Interval** | ~4 years (210,000 blocks) |
-| **Minimum Reward** | 1 TKC |
+| **Tail Emission** | 1 TKC (minimum reward forever) |
+| **Emission Curve** | Smooth exponential decay — no halving events ([`EmissionCurve`](tokencoin/core/emission.py:100)) |
 
 ### Wallet
 | Feature | Implementation |
@@ -271,8 +271,9 @@ tokencoin/
 ├── cli.py                         # Command-line interface
 ├── mainnet_config.py              # Mainnet/testnet deployment config
 │
-├── core/                          # Cryptographic primitives
+├── core/                          # Cryptographic primitives & monetary policy
 │   ├── crypto.py                  # Ed25519 keys, Pedersen commitments, stealth addresses, ring signatures, key images, range proofs, Base32
+│   ├── emission.py                # Smooth emission curve — fair, unbiased printing (Monero-style)
 │   ├── bip39.py                   # BIP39 mnemonic (2048-word list, PBKDF2 seed derivation)
 │   ├── mlsag.py                   # MLSAG ring signatures (multi-layer, linkable)
 │   ├── bulletproofs.py            # Bulletproofs range proofs (inner product argument)
@@ -310,11 +311,12 @@ tokencoin/
 
 ## Modules
 
-### Core Cryptography ([`tokencoin/core/`](tokencoin/core/))
+### Core Cryptography & Monetary Policy ([`tokencoin/core/`](tokencoin/core/))
 
 | File | Description |
 |---|---|
 | [`crypto.py`](tokencoin/core/crypto.py) | Ed25519 keys, Pedersen commitments, stealth addresses, ring signatures, key images, range proofs, Base32 encoding |
+| [`emission.py`](tokencoin/core/emission.py) | Smooth emission curve — fair, unbiased printing with tail emission (Monero-style) |
 | [`bip39.py`](tokencoin/core/bip39.py) | BIP39 mnemonic generation/validation, PBKDF2 seed derivation, TKC seed derivation |
 | [`mlsag.py`](tokencoin/core/mlsag.py) | Multi-layered linkable ring signatures (MLSAG) for multi-input transactions |
 | [`bulletproofs.py`](tokencoin/core/bulletproofs.py) | Zero-knowledge range proofs for confidential transaction amounts |
