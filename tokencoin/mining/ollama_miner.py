@@ -711,7 +711,7 @@ class OllamaManager:
         On Linux: can run 'ollama serve' directly.
         """
         if not self._ollama_available:
-            logger.error("Ollama is not installed. Install it from https://ollama.ai")
+            logger.error("Ollama is not installed. Install it from https://ollama.com")
             return False
         
         # Check if already running
@@ -745,7 +745,7 @@ class OllamaManager:
             return False
             
         except FileNotFoundError:
-            logger.error("Ollama binary not found. Install from https://ollama.ai")
+            logger.error("Ollama binary not found. Install from https://ollama.com")
             self._local_instance.status = OllamaInstanceStatus.ERROR
             return False
         except Exception as e:

@@ -159,17 +159,17 @@ python setup.py build_ext --inplace
 
 ### Install Ollama
 
-TokenCoin uses **Ollama** for AI inference mining. Install it from [ollama.ai](https://ollama.ai):
+TokenCoin uses **Ollama** for AI inference mining. Install it from [ollama.com](https://ollama.com):
 
 ```bash
 # macOS
 brew install ollama
 
 # Linux
-curl -fsSL https://ollama.ai/install.sh | sh
+curl -fsSL https://ollama.com/install.sh | sh
 
 # Windows
-# Download from https://ollama.ai/download
+# Download from https://ollama.com/download
 ```
 
 ### CLI Usage
@@ -426,10 +426,10 @@ TokenCoin uses **Ollama** for Proof-of-Useful-Work mining. Ollama runs on CPU, N
 brew install ollama
 
 # Linux
-curl -fsSL https://ollama.ai/install.sh | sh
+curl -fsSL https://ollama.com/install.sh | sh
 
 # Windows
-# Download from https://ollama.ai/download
+# Download from https://ollama.com/download
 ```
 
 ### Start Ollama

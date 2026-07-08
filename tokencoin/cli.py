@@ -166,7 +166,7 @@ class CLI:
                     print("\nMining stopped.")
             else:
                 print("Error: Failed to start mining. Is Ollama installed?")
-                print("Install from: https://ollama.ai")
+                print("Install from: https://ollama.com")
 
         asyncio.run(run())
 
