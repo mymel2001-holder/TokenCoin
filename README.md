@@ -4,7 +4,7 @@
 
 TokenCoin exposes a **public, OpenAI-compatible API** (`/v1/chat/completions`, `/v1/embeddings`) that routes inference requests to the distributed mining network. External users call it like they would OpenAI, while miners earn TKC for processing the requests.
 
-> **Status:** Alpha — Reference Implementation
+> **Status:** Alpha — Rough Draft
 > **Author:** Sammy Lord
 > **License:** MIT
 
