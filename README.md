@@ -600,6 +600,10 @@ config = get_testnet_config()
 
 ---
 
+## One last, small note
+
+I designed this specifically so I don't have to run any nodes myself and I'm not putting SPL-R5 on this, therefore I shall not make money off of my own creation - that way I'm not as biased towards my own creation. If you like this work, [PLEASE DONATE](https://coindrop.to/sam) as much as you feel and are financially able to so I can keep doing this.
+
 ## License
 
 MIT License — see [LICENSE](LICENSE) file for details.
