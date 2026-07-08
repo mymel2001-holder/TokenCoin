@@ -1,20 +1,23 @@
 # **System Design Document: TokenCoin (TKC)**
 
-**Author:** Sammy Lord  
-**Status:** Implementation Document  
+**Author:** Sammy Lord
+**Status:** Implementation Document
 **Date:** July 2026
 
 ## **1\. Executive Summary**
 
 **TokenCoin (TKC)** is a next-generation, privacy-first cryptocurrency that fuses decentralized AI inference with private financial transactions. Instead of wasting energy on arbitrary Proof-of-Work (PoW) hashes, TokenCoin utilizes **Proof-of-Useful-Work (PoUW)**. Miners contribute computational power to a global, decentralized cluster of **Ollama** instances — supporting CPU, NVIDIA GPU (CUDA), AMD GPU (ROCm), and Apple Silicon (Metal).
+
 Financially, TokenCoin enforces strict, untraceable anonymity inspired by Monero, utilizing a heavily modified ring signature and stealth address protocol natively mapped to isolated onion-routing network layers.
+
+**Key Design Decision:** The mining network is **fully P2P** with no central server, no bootstrap nodes, and no static node list. Miner discovery and job distribution happen entirely through the Kademlia DHT and gossip protocol. Every node discovers miners dynamically, builds a reputation-based registry, and distributes jobs via epidemic broadcast.
 
 ## **2\. Architecture Overview**
 
 TokenCoin's architecture consists of three core layers interacting in parallel:
 
-1. **The Network & Routing Layer:** Governs node discovery, communication, and native anonymous addressing.  
-2. **The Consensus & AI Inference Layer:** Manages the distributed Ollama orchestration, job distribution, and Proof-of-Useful-Work verification.  
+1. **The Network & Routing Layer:** Governs node discovery, communication, and native anonymous addressing. Includes the **MiningP2PSubnet** — a fully decentralized overlay for miner discovery and job distribution.
+2. **The Consensus & AI Inference Layer:** Manages the distributed Ollama orchestration, job distribution, and Proof-of-Useful-Work verification.
 3. **The Ledger & Privacy Layer:** Executes private financial transactions using advanced cryptographic primitives.
 
 ```
@@ -25,6 +28,7 @@ TokenCoin's architecture consists of three core layers interacting in parallel:
                             v
 +-------------------------------------------------------------+
 | Network Layer: Tor-based Addresses (Base32, 56 chars)       |
+| Sub-layer: MiningP2PSubnet (DHT + gossip, no central node)  |
 +-------------------------------------------------------------+
                             |
         +-------------------+-------------------+
@@ -34,12 +38,17 @@ TokenCoin's architecture consists of three core layers interacting in parallel:
 | Ledger Layer (Privacy)       | | Consensus Layer (AI/Ollama)  |
 | - RingCT & Stealth Addresses | | - Proof-of-Useful-Work       |
 | - Single-hop Visibility      | | - Distributed Ollama Cluster |
+| - Horizon Privacy            | | - P2P Miner Discovery        |
 +------------------------------+ +------------------------------+
 ```
-4. Should dynamically digitally "print" money while mining - in a fair manner without bias.
-       * We should start out with a "base amount" of 10T we can ever mine, starting printing at around 6.4B
-       * Print dynamically yet fairly distributed so it never runs out
-       * Start out with a block reward of 12TKC, go down from there.
+
+The mining subnet is a **logical overlay** on top of the P2P network. It reuses the existing gossip message types (`MINER_REGISTER`, `JOB_ANNOUNCE`, `JOB_CLAIM`, `JOB_RESULT`) and Kademlia DHT routing table for fully decentralized operation.
+
+### Monetary Policy Constraints
+- Should dynamically digitally "print" money while mining — in a fair manner without bias.
+- Start with a "base amount" of 10T we can ever mine, starting printing at around 6.4B
+- Print dynamically yet fairly distributed so it never runs out
+- Start with a block reward of 12 TKC, go down from there with smooth exponential decay (no halving events)
 
 ## **3\. Network Layer: Tor-Based Addressing**
 
@@ -79,9 +88,11 @@ TokenCoin replaces traditional cryptographic hashing with verifiable AI inferenc
 
 When a user clicks "Mine" in the TokenCoin client, the software connects to a local or remote **Ollama** instance.
 
-* The node registers its hardware capabilities (CPU cores, RAM, GPU type/VRAM) to the decentralized public cluster via a DHT (Distributed Hash Table).
+* The node registers its hardware capabilities (CPU cores, RAM, GPU type/VRAM, supported models) to the decentralized public cluster via the **MiningP2PSubnet** — a fully P2P overlay on the Kademlia DHT.
+* Miner discovery is **fully decentralized**: there is no central server, no bootstrap node, and no static list of remote instances. Every miner broadcasts its capabilities via `MINER_REGISTER` gossip messages, and the DHT propagates them across the network.
 * The cluster serves public-facing AI requests (LLMs, vision models, embedding models) via a unified OpenAI-compatible API.
 * Supports CPU-only mining, NVIDIA GPU (CUDA), AMD GPU (ROCm), and Apple Silicon (Metal).
+* **Peer Scoring:** Each node maintains a reputation score for every known miner, providing sybil resistance and incentivizing honest behavior.
 
 ### **5.2 Public OpenAI-Compatible API**
 
@@ -95,13 +106,17 @@ POST /v1/chat/completions  -->  OpenAIServer (tokencoin api start)
     |                              |
     |                              +--> Try local Ollama (fast path)
     |                              |
-    |                              +--> Broadcast job via P2P gossip
+    |                              +--> Create MiningSubnetJob
     |                                       |
     |                                       v
-    |                              Mining Network (DHT)
-    |                              +--> Miner A claims job
-    |                              +--> Miner B claims job
-    |                              +--> Miner C claims job
+    |                              MiningP2PSubnet (DHT + Gossip)
+    |                              - JOB_ANNOUNCE broadcast
+    |                              - Miners claim via JOB_CLAIM
+    |                              - First claimant wins
+    |                              - Result via JOB_RESULT
+    |                              +--> Miner A (GPU)
+    |                              +--> Miner B (CPU)
+    |                              +--> Miner C (Apple Silicon)
     |
     v
 Returns OpenAI-compatible JSON response
@@ -122,13 +137,67 @@ To prevent spoofing or lazy nodes, TokenCoin uses a deterministic verification m
 
 ### **5.4 Distributed Mining Architecture**
 
-TokenCoin supports a fully distributed mining topology:
+TokenCoin supports a fully distributed mining topology with **no central server** and **no static node list**. The [`MiningP2PSubnet`](../tokencoin/network/mining_p2p.py) is a logical overlay on the existing P2P network that handles all miner discovery and job distribution.
+
+#### 5.4.1 P2P Miner Discovery
+
+Instead of maintaining a static list of remote instances, miners discover each other dynamically:
+
+1. **Capability Announcement:** Every miner broadcasts its hardware capabilities (backend type, GPU model, VRAM, supported models, CPU threads) via `MINER_REGISTER` gossip messages.
+2. **DHT Propagation:** The Kademlia DHT routes these announcements through the network, populating each node's routing table with mining peers.
+3. **Live Registry:** Each node maintains a [`MiningPeerInfo`](../tokencoin/network/mining_p2p.py:30) registry with reputation scores, hardware specs, and last-seen timestamps.
+4. **Periodic Re-announcement:** Miners re-announce their presence every 2 minutes to keep the registry fresh.
+5. **Dead Peer Eviction:** Peers not seen for 30 minutes are automatically removed from the registry.
+
+#### 5.4.2 Job Distribution Flow
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    P2P Mining Subnet                             │
+│                                                                  │
+│  ┌──────────────┐    JOB_ANNOUNCE (gossip)    ┌──────────────┐  │
+│  │              │ ──────────────────────────►  │              │  │
+│  │  Requester   │                              │  Miner A     │  │
+│  │  (creates    │ ◄──────────────────────────  │  (claims     │  │
+│  │   job)       │    JOB_CLAIM (first wins)    │   job)       │  │
+│  │              │                              │              │  │
+│  │              │ ◄──────────────────────────  │              │  │
+│  │              │    JOB_RESULT + verification │              │  │
+│  └──────────────┘                              └──────────────┘  │
+│                                                                  │
+│  All communication via gossip protocol over Kademlia DHT         │
+│  No central server, no bootstrap nodes, no static lists          │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+1. **Job Announcement:** Any node can create a [`MiningSubnetJob`](../tokencoin/network/mining_p2p.py:148) and broadcast it to the subnet via `JOB_ANNOUNCE` gossip.
+2. **First-Come, First-Served:** Miners monitor the gossip stream for jobs matching their model. The first miner to broadcast a `JOB_CLAIM` wins the job.
+3. **Result Submission:** The winning miner processes the inference and submits the result via `JOB_RESULT` gossip.
+4. **Reputation Update:** Successful completions increase the miner's peer score. Failed or invalid results decrease it.
+
+#### 5.4.3 Peer Scoring and Sybil Resistance
+
+Each miner maintains a reputation score for every peer:
+
+- **Score Range:** 0.0 (untrusted) to 1.0 (fully trusted). Default: 0.5.
+- **Score Increases:** +0.05 per successful job completion, +0.01 per valid registration.
+- **Score Decreases:** -0.1 per invalid registration or failed job.
+- **Automatic Bans:** Peers with excessive failures are temporarily banned.
+- **Minimum Score Filter:** The `p2p_min_peer_score` config option (default: 0.0) lets nodes reject low-reputation miners.
+
+#### 5.4.4 Integration with Consensus Engine
+
+The [`ConsensusEngine`](../tokencoin/consensus/__init__.py:684) integrates the P2P subnet via `set_p2p_subnet()`:
+
+- **`start_mining()`:** Starts the P2P subnet and registers local miner capabilities.
+- **`mine_block()`:** First checks for pending jobs from the subnet. If found, processes and returns results. If not, creates a local job and announces it to the subnet for other miners.
+- **`get_mining_stats()`:** Includes P2P subnet status (known miners, alive miners, pending/claimed/completed jobs).
+
+#### 5.4.5 Supported Mining Topologies
 
 - **Local Mining:** Run Ollama directly on your machine (CPU, GPU, or Apple Silicon)
-- **Remote Instances:** Connect to remote Ollama servers for distributed mining
-- **P2P Job Distribution:** Inference jobs are broadcast via the Kademlia DHT gossip protocol. Miners claim jobs and submit results back through the network.
+- **P2P Remote Mining:** Miners discovered automatically via the DHT — no manual configuration needed
 - **Docker Deployment:** Deploy Ollama via Docker for isolated, scalable mining
-- **Auto-Discovery:** The DHT automatically discovers and registers mining nodes
 - **Unified API:** All mining nodes contribute to a single, public OpenAI-compatible endpoint
 
 ## **6\. User Interface & Wallet Design**

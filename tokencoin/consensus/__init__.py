@@ -9,6 +9,7 @@ Key components:
   - ZKIPVerifier: Zero-Knowledge Inference Proof verification
   - DifficultyAdjuster: Dynamic difficulty based on network hashrate
   - SlashingManager: Penalizes dishonest miners
+  - MiningP2PSubnet: Fully P2P miner discovery (replaces static remote_instances)
 """
 
 import asyncio
@@ -37,6 +38,9 @@ from tokencoin.ledger import (
 from tokencoin.mining.ollama_miner import (
     OllamaManager, OllamaModel, OllamaInstance, HardwareInfo,
     HardwareBackend, OLLAMA_MODELS, MODEL_REGISTRY, detect_hardware,
+)
+from tokencoin.network.mining_p2p import (
+    MiningP2PSubnet, MiningSubnetJob, MiningPeerInfo,
 )
 
 logger = logging.getLogger(__name__)
@@ -232,6 +236,10 @@ class OllamaOrchestrator:
     Manages the lifecycle of local/remote Ollama instances.
     Handles model pulling, instance management, and inference requests.
     Supports CPU, NVIDIA GPU (CUDA), AMD GPU (ROCm), and Apple Silicon (Metal).
+
+    Remote instances are discovered via the P2P mining subnet (DHT + gossip)
+    instead of a static list of nodes. Every miner broadcasts its capabilities
+    and discovers peers through the Kademlia routing table.
     """
 
     def __init__(self):
@@ -241,6 +249,14 @@ class OllamaOrchestrator:
         self._running = False
         self._job_queue: asyncio.Queue = asyncio.Queue()
         self._result_queue: asyncio.Queue = asyncio.Queue()
+
+        # P2P Mining Subnet (replaces static remote_instances)
+        self.p2p_subnet: Optional[MiningP2PSubnet] = None
+
+    def set_p2p_subnet(self, subnet: MiningP2PSubnet):
+        """Attach the P2P mining subnet for dynamic miner discovery."""
+        self.p2p_subnet = subnet
+        logger.info("P2P mining subnet attached to orchestrator")
 
     async def start(self, model_name: str) -> bool:
         """Start mining with the specified Ollama model."""
@@ -270,10 +286,32 @@ class OllamaOrchestrator:
                     logger.error(f"Failed to pull model {model.full_name}")
                     return False
 
-        # Select the best instance for this model
-        instance = self.manager.get_best_instance(model)
+        # Register local miner with the P2P subnet so remote peers
+        # can discover us and assign us jobs.
+        if self.p2p_subnet and CONFIG.ollama.p2p_mining_enabled:
+            hw = self.manager.hardware
+            capabilities = {
+                "host": "127.0.0.1",
+                "port": CONFIG.ollama.default_port,
+                "backend": hw.backend.value,
+                "backend_version": hw.backend_version,
+                "gpu_name": hw.gpu_name,
+                "vram_total_gb": hw.vram_total_gb,
+                "ram_total_gb": hw.ram_total_gb,
+                "cpu_threads": hw.cpu_threads,
+                "models_available": [model.full_name],
+                "jobs_completed": 0,
+                "jobs_failed": 0,
+                "avg_processing_time_ms": 0.0,
+            }
+            self.p2p_subnet.register_local_miner(capabilities)
+            logger.info("Registered local miner with P2P subnet")
+
+        # Select the best instance for this model.
+        # With P2P, this includes remote miners discovered via the subnet.
+        instance = self._get_best_p2p_instance(model)
         if not instance:
-            logger.error("No healthy Ollama instance available")
+            logger.error("No healthy Ollama instance available (local or P2P)")
             return False
 
         self.active_model = model
@@ -281,12 +319,75 @@ class OllamaOrchestrator:
         instance.active_model = model.full_name
         self._running = True
 
-        logger.info(
-            f"Ollama mining started with {model.full_name} on "
-            f"{instance.instance_id} ({instance.host}:{instance.port}) "
-            f"[{self.manager.hardware.backend.value}]"
-        )
+        backend_label = self.manager.hardware.backend.value
+        if instance.is_local:
+            logger.info(
+                f"Ollama mining started with {model.full_name} on "
+                f"local instance [{backend_label}]"
+            )
+        else:
+            logger.info(
+                f"Ollama mining started with {model.full_name} on "
+                f"remote P2P miner {instance.instance_id} "
+                f"({instance.host}:{instance.port}) [{backend_label}]"
+            )
         return True
+
+    def _get_best_p2p_instance(self, model: OllamaModel) -> Optional[OllamaInstance]:
+        """
+        Select the best instance for running a model.
+        Steps:
+          1. Check local instance first
+          2. If P2P subnet is available, query discovered miners
+          3. Fall back to any compatible instance
+
+        This replaces the old static remote_instances approach.
+        """
+        # 1. Check local instance first
+        local = self.manager.get_best_instance(model)
+        if local and local.is_healthy:
+            return local
+
+        # 2. Check P2P subnet for remote miners
+        if self.p2p_subnet and CONFIG.ollama.p2p_mining_enabled:
+            p2p_miners = self.p2p_subnet.get_available_miners(
+                model_memory_gb=model.min_memory_gb,
+                min_score=CONFIG.ollama.p2p_min_peer_score,
+            )
+
+            # Collect the P2P node IDs that correspond to local instances
+            # so we don't re-add ourselves as a remote miner.
+            # Local instance uses a 12-char hex ID; P2P uses 56-char TKC address.
+            local_p2p_node_id = self.p2p_subnet.node_id
+
+            for miner in p2p_miners:
+                # Skip our own node (P2P node_id = TKC address, not local instance hash)
+                if miner.node_id == local_p2p_node_id:
+                    continue
+
+                # Check if we already have an instance for this miner
+                if miner.node_id in self.manager.instances:
+                    existing = self.manager.instances[miner.node_id]
+                    if existing.is_healthy:
+                        return existing
+
+                # Also check by host:port to avoid duplicates
+                already_connected = any(
+                    inst.host == miner.host and inst.port == miner.port
+                    for inst in self.manager.instances.values()
+                )
+                if already_connected:
+                    continue
+
+                # Add as a new remote instance discovered via P2P subnet
+                if miner.host and miner.port:
+                    inst_id = self.manager.add_remote_instance(miner.host, miner.port)
+                    instance = self.manager.instances.get(inst_id)
+                    if instance:
+                        return instance
+
+        # 3. Fallback: any compatible instance (local only)
+        return self.manager.get_best_instance(model)
 
     async def stop(self):
         """Stop the Ollama orchestrator."""
@@ -580,6 +681,9 @@ class ConsensusEngine:
     The main consensus engine coordinating PoUW mining via Ollama.
     Manages the full lifecycle: job distribution -> inference -> verification -> block creation.
     Supports distributed mining across multiple Ollama instances (local and remote).
+
+    Miner discovery is fully P2P-based via the MiningP2PSubnet (DHT + gossip),
+    replacing the old static remote_instances list. No central server required.
     """
 
     def __init__(self, blockchain: "Blockchain"):
@@ -592,78 +696,172 @@ class ConsensusEngine:
         self._mining = False
         self._miner_keypair: Optional[KeyPair] = None
 
+        # P2P Mining Subnet (fully decentralized, no central server)
+        self.p2p_subnet: Optional[MiningP2PSubnet] = None
+
     def initialize_miner(self, keypair: KeyPair):
         """Initialize the miner with a keypair."""
         self._miner_keypair = keypair
         self.work_generator = WorkBlockGenerator(keypair, self.blockchain)
         logger.info(f"Miner initialized: {keypair.to_address()}")
 
+    def set_p2p_subnet(self, subnet: MiningP2PSubnet):
+        """
+        Attach the P2P mining subnet for fully decentralized miner discovery.
+        This replaces the old CONFIG.ollama.remote_instances static list.
+        """
+        self.p2p_subnet = subnet
+        self.orchestrator.set_p2p_subnet(subnet)
+        logger.info("P2P mining subnet attached to consensus engine")
+
     async def start_mining(self, model_name: str = "phi3-mini") -> bool:
-        """Start the mining process."""
+        """Start the mining process.
+
+        Miners are discovered via the P2P subnet (DHT + gossip) instead of
+        a static list of nodes. If p2p_mining_enabled is False, falls back
+        to local-only mining.
+        """
         if not self._miner_keypair:
             logger.error("Miner not initialized")
             return False
 
-        # Register any configured remote instances
-        for remote in CONFIG.ollama.remote_instances:
-            if ":" in remote:
-                host, port_str = remote.split(":", 1)
-                try:
-                    port = int(port_str)
-                    self.orchestrator.manager.add_remote_instance(host, port)
-                except ValueError:
-                    logger.warning(f"Invalid remote instance format: {remote}")
-            else:
-                self.orchestrator.manager.add_remote_instance(remote)
+        # Start the P2P mining subnet if enabled
+        if CONFIG.ollama.p2p_mining_enabled and self.p2p_subnet:
+            await self.p2p_subnet.start()
+            logger.info("P2P mining subnet started for miner discovery")
+
+        # NOTE: The old CONFIG.ollama.remote_instances loop has been removed.
+        # Remote miners are now discovered dynamically via the P2P subnet's
+        # DHT + gossip protocol. No central server or static node list needed.
 
         success = await self.orchestrator.start(model_name)
         if success:
             self._mining = True
-            logger.info(f"Mining started with model {model_name}")
+            logger.info(f"Mining started with model {model_name} "
+                        f"(P2P discovery: {CONFIG.ollama.p2p_mining_enabled})")
         return success
 
     async def stop_mining(self):
         """Stop the mining process."""
         self._mining = False
         await self.orchestrator.stop()
+
+        # Stop the P2P mining subnet
+        if self.p2p_subnet:
+            await self.p2p_subnet.stop()
+
         logger.info("Mining stopped")
 
     async def mine_block(self) -> Optional[Block]:
         """
         Perform one mining cycle: process a job and create a block.
+        Jobs can be obtained from the P2P subnet (distributed) or
+        created locally for self-mining.
         """
         if not self._mining or not self.orchestrator.is_running():
             return None
 
-        # Create an inference job (in production: pulled from DHT job queue)
-        job = InferenceJob(
-            job_id=hashlib.sha3_256(str(time.time()).encode()).hexdigest()[:16],
-            model_name=self.orchestrator.active_model.full_name,
-            input_data=os.urandom(64),  # Random input (in production: real user request)
-            seed_params=os.urandom(CONFIG.consensus.zkip_challenge_size),
-            difficulty_target=self.blockchain.state.difficulty,
-        )
+        # Check if there are pending jobs from the P2P subnet to work on
+        subnet_job: Optional[MiningSubnetJob] = None
+        if self.p2p_subnet and CONFIG.ollama.p2p_mining_enabled:
+            for jid, job in list(self.p2p_subnet._pending_jobs.items()):
+                if job.model_name == self.orchestrator.active_model.full_name:
+                    if jid not in self.p2p_subnet._claimed_jobs:
+                        subnet_job = job
+                        break
 
-        # Process the job
-        result = await self.orchestrator.submit_job(job)
-        if not result:
-            return None
+        if subnet_job:
+            # Process a job from the P2P subnet (distributed mining)
+            logger.info(f"Processing P2P subnet job {subnet_job.job_id[:16]}...")
 
-        # Verify the result
-        if not self.zkip_verifier.verify_tensor_commitment(result, job):
-            logger.warning("Tensor commitment verification failed")
-            if self._miner_keypair:
-                self.slashing_manager.record_violation(
-                    self._miner_keypair.to_address()
+            # Claim it
+            await self.p2p_subnet.claim_job(subnet_job.job_id)
+
+            # Convert to internal InferenceJob
+            inference_job = InferenceJob(
+                job_id=subnet_job.job_id,
+                model_name=subnet_job.model_name,
+                input_data=subnet_job.prompt.encode("utf-8"),
+                seed_params=subnet_job.seed_params,
+                difficulty_target=subnet_job.difficulty_target,
+                reward=subnet_job.reward,
+            )
+
+            # Process the job
+            result = await self.orchestrator.submit_job(inference_job)
+            if not result:
+                logger.warning(f"Failed to process P2P subnet job {subnet_job.job_id[:16]}...")
+                return None
+
+            # Submit result back to the subnet
+            await self.p2p_subnet.submit_result(
+                subnet_job.job_id,
+                {
+                    "output": result.output_tokens.decode("utf-8", errors="replace"),
+                    "processing_time_ms": result.processing_time_ms,
+                    "tensor_commitment": result.tensor_commitment.hex(),
+                    "model": result.model_name,
+                    "instance_id": result.instance_id,
+                }
+            )
+
+            # Verify the result
+            if not self.zkip_verifier.verify_tensor_commitment(result, inference_job):
+                logger.warning("Tensor commitment verification failed for subnet job")
+                if self._miner_keypair:
+                    self.slashing_manager.record_violation(
+                        self._miner_keypair.to_address()
+                    )
+                return None
+
+            if not self.zkip_verifier.verify_inference_time(
+                result, self.orchestrator.active_model
+            ):
+                logger.warning("Inference time verification failed for subnet job")
+                return None
+
+        else:
+            # No pending subnet jobs — create a local job (self-mining)
+            inference_job = InferenceJob(
+                job_id=hashlib.sha3_256(str(time.time()).encode()).hexdigest()[:16],
+                model_name=self.orchestrator.active_model.full_name,
+                input_data=os.urandom(64),
+                seed_params=os.urandom(CONFIG.consensus.zkip_challenge_size),
+                difficulty_target=self.blockchain.state.difficulty,
+            )
+
+            # Announce the job to the P2P subnet so other miners can work on it too
+            if self.p2p_subnet and CONFIG.ollama.p2p_mining_enabled:
+                subnet_job = MiningSubnetJob(
+                    job_id=inference_job.job_id,
+                    model_name=inference_job.model_name,
+                    prompt=inference_job.input_data.hex(),
+                    seed_params=inference_job.seed_params,
+                    difficulty_target=inference_job.difficulty_target,
+                    reward=inference_job.reward,
+                    requester_id=self._miner_keypair.to_address() if self._miner_keypair else "",
                 )
-            return None
+                await self.p2p_subnet.announce_job(subnet_job)
 
-        # Verify inference time is realistic
-        if not self.zkip_verifier.verify_inference_time(
-            result, self.orchestrator.active_model
-        ):
-            logger.warning("Inference time verification failed")
-            return None
+            # Process locally
+            result = await self.orchestrator.submit_job(inference_job)
+            if not result:
+                return None
+
+            # Verify
+            if not self.zkip_verifier.verify_tensor_commitment(result, inference_job):
+                logger.warning("Tensor commitment verification failed")
+                if self._miner_keypair:
+                    self.slashing_manager.record_violation(
+                        self._miner_keypair.to_address()
+                    )
+                return None
+
+            if not self.zkip_verifier.verify_inference_time(
+                result, self.orchestrator.active_model
+            ):
+                logger.warning("Inference time verification failed")
+                return None
 
         # Get mempool transactions
         mempool_txs = self.blockchain.get_mempool_txs()
@@ -689,9 +887,9 @@ class ConsensusEngine:
         return self._mining
 
     def get_mining_stats(self) -> Dict[str, Any]:
-        """Get current mining statistics."""
+        """Get current mining statistics, including P2P subnet info."""
         hw = self.orchestrator.manager.hardware
-        return {
+        stats = {
             "mining": self._mining,
             "hardware": {
                 "backend": hw.backend.value,
@@ -711,3 +909,18 @@ class ConsensusEngine:
             "difficulty": self.blockchain.state.difficulty,
             "height": self.blockchain.state.height,
         }
+
+        # Add P2P subnet stats
+        if self.p2p_subnet:
+            p2p_status = self.p2p_subnet.get_subnet_status()
+            stats["p2p_subnet"] = {
+                "enabled": CONFIG.ollama.p2p_mining_enabled,
+                "known_miners": p2p_status["miners"]["total_known"],
+                "alive_miners": p2p_status["miners"]["alive"],
+                "remote_miners": p2p_status["miners"]["remote"],
+                "pending_jobs": p2p_status["jobs"]["pending"],
+                "claimed_jobs": p2p_status["jobs"]["claimed"],
+                "completed_jobs": p2p_status["jobs"]["completed"],
+            }
+
+        return stats

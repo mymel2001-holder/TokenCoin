@@ -1,13 +1,16 @@
 """
 TokenCoin Network Layer
 ========================
-Implements Tor-based addressing, DHT node discovery, and P2P communication.
+Implements Tor-based addressing, DHT node discovery, P2P communication,
+and the fully decentralized mining subnet.
 
 Key components:
   - AddressManager: 56-char Base32 address generation and validation
   - DHTNode: Kademlia-based distributed hash table for peer discovery
   - P2PTransport: End-to-end encrypted Tor circuit communication
   - PeerManager: Peer lifecycle management
+  - MiningP2PSubnet: Fully decentralized mining subnet (DHT + gossip based)
+    Replaces static remote_instances with dynamic P2P miner discovery.
 """
 
 import asyncio
@@ -26,6 +29,13 @@ from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 from tokencoin.config import CONFIG
 from tokencoin.core.crypto import (
     PublicKey, PrivateKey, KeyPair, base32_encode, base32_decode
+)
+
+# Re-export the MiningP2PSubnet so it can be imported from tokencoin.network
+from tokencoin.network.mining_p2p import (
+    MiningP2PSubnet,
+    MiningSubnetJob,
+    MiningPeerInfo,
 )
 
 logger = logging.getLogger(__name__)

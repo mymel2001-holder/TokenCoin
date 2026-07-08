@@ -133,7 +133,12 @@ class ConsensusConfig:
 # ---------------------------------------------------------------------------
 @dataclass
 class OllamaConfig:
-    """Distributed Ollama mining configuration."""
+    """Distributed Ollama mining configuration.
+
+    Mining is now fully P2P-based. The static remote_instances list has been
+    replaced by the MiningP2PSubnet, which discovers miners via the Kademlia
+    DHT and gossip protocol — no central server or static node list required.
+    """
     # Default Ollama API port
     default_port: int = 11434
 
@@ -152,9 +157,28 @@ class OllamaConfig:
     # Auto-pull models if not available locally
     auto_pull_models: bool = True
 
-    # Remote Ollama instances for distributed mining
-    # Format: ["host:port", ...]
-    remote_instances: List[str] = field(default_factory=list)
+    # P2P Mining Subnet Configuration
+    # ================================
+    # These replace the old static remote_instances list.
+
+    # Enable P2P-based miner discovery (DHT + gossip, no central server)
+    # When disabled, falls back to local-only mining
+    p2p_mining_enabled: bool = True
+
+    # How often (seconds) to re-announce our capabilities to the subnet
+    p2p_announce_interval: int = 120
+
+    # How often (seconds) to clean up dead peers from the registry
+    p2p_cleanup_interval: int = 300
+
+    # Maximum age (seconds) for a peer to be considered alive
+    p2p_peer_timeout: int = 600
+
+    # Maximum age (seconds) before removing a peer from the registry entirely
+    p2p_peer_eviction_timeout: int = 1800
+
+    # Minimum reputation score (0.0-1.0) to accept jobs from a miner
+    p2p_min_peer_score: float = 0.0
 
     # Maximum concurrent jobs per instance
     max_concurrent_jobs: int = 1

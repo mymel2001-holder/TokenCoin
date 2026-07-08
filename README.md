@@ -92,13 +92,14 @@ Every wallet is also a full node. There are **no central bootstrap nodes**, no c
 | **AMD GPU Mining** | ROCm support for AMD GPUs ([`HardwareBackend.ROCM`](tokencoin/mining/ollama_miner.py:30)) |
 | **Apple Silicon Mining** | Metal acceleration on M-series Macs ([`HardwareBackend.METAL`](tokencoin/mining/ollama_miner.py:30)) |
 | **ZKIP Verification** | Zero-Knowledge Inference Proofs prevent spoofing ([`ZKIPVerifier`](tokencoin/consensus/__init__.py:145)) |
-| **Dynamic Difficulty** | Targets 5-minute block times ([`DifficultyAdjuster`](tokencoin/consensus/__init__.py:280)) |
-| **Slashing** | Penalizes dishonest miners ([`SlashingManager`](tokencoin/consensus/__init__.py:310)) |
-| **One-Click Toggle** | [`Miner.toggle()`](tokencoin/mining/__init__.py:130) with real-time hardware stats and TKC rate |
-| **P2P Job Distribution** | Inference jobs broadcast via DHT gossip protocol ([`P2PNode.broadcast_job()`](tokencoin/network/p2p.py:780)) |
+| **Dynamic Difficulty** | Targets 5-minute block times ([`DifficultyAdjuster`](tokencoin/consensus/__init__.py:555)) |
+| **Slashing** | Penalizes dishonest miners ([`SlashingManager`](tokencoin/consensus/__init__.py:611)) |
+| **One-Click Toggle** | [`Miner.toggle()`](tokencoin/mining/__init__.py:229) with real-time hardware stats and TKC rate |
+| **P2P Job Distribution** | Inference jobs broadcast via DHT gossip protocol ([`MiningP2PSubnet`](tokencoin/network/mining_p2p.py:183)) |
+| **P2P Miner Discovery** | Fully decentralized — no central server, no static node list ([`MiningP2PSubnet.get_available_miners()`](tokencoin/network/mining_p2p.py:548)) |
 | **Public OpenAI API** | Unified `/v1/chat/completions` and `/v1/embeddings` endpoint ([`OpenAIServer`](tokencoin/api/__init__.py:300)) |
-| **Distributed Mining** | Connect remote Ollama instances for cluster mining ([`OllamaManager.add_remote_instance()`](tokencoin/mining/ollama_miner.py:300)) |
-| **Docker Deployment** | Run Ollama in Docker for isolated mining ([`DockerManager`](tokencoin/consensus/docker_nim.py:100)) |
+| **Distributed Mining** | Remote miners discovered dynamically via P2P subnet ([`MiningP2PSubnet`](tokencoin/network/mining_p2p.py:183)) |
+| **Docker Deployment** | Run Ollama in Docker for isolated mining ([`DockerManager`](tokencoin/consensus/docker_nim.py:112)) |
 
 ### Monetary Policy
 | Parameter | Value |
@@ -122,12 +123,13 @@ Every wallet is also a full node. There are **no central bootstrap nodes**, no c
 ### Network
 | Feature | Implementation |
 |---|---|
-| **Fully P2P** | No central nodes — every wallet is a full node ([`P2PNode`](tokencoin/network/p2p.py:550)) |
-| **Kademlia DHT** | 160 k-buckets, random-walk discovery, peer exchange ([`DHT`](tokencoin/network/p2p.py:100)) |
-| **Gossip Protocol** | Epidemic broadcast with TTL, dedup, and fanout ([`GossipEngine`](tokencoin/network/p2p.py:420)) |
+| **Fully P2P** | No central nodes — every wallet is a full node ([`P2PNode`](tokencoin/network/p2p.py:579)) |
+| **Kademlia DHT** | 160 k-buckets, random-walk discovery, peer exchange ([`DHT`](tokencoin/network/p2p.py:206)) |
+| **Gossip Protocol** | Epidemic broadcast with TTL, dedup, and fanout ([`GossipEngine`](tokencoin/network/p2p.py:401)) |
+| **Mining P2P Subnet** | Fully decentralized miner discovery over DHT + gossip ([`MiningP2PSubnet`](tokencoin/network/mining_p2p.py:183)) |
 | **Tor Integration** | Hidden service creation, SOCKS5 proxy ([`TorManager`](tokencoin/network/tor_integration.py:80)) |
-| **Peer Scoring** | Reputation system with automatic bans ([`PeerScore`](tokencoin/network/p2p.py:80)) |
-| **NAT Traversal** | STUN, TCP hole-punching ([`NATTraversal`](tokencoin/network/p2p.py:520)) |
+| **Peer Scoring** | Reputation system with automatic bans ([`PeerScore`](tokencoin/network/p2p.py:134)) |
+| **NAT Traversal** | STUN, TCP hole-punching ([`NATTraversal`](tokencoin/network/p2p.py:540)) |
 
 ---
 
@@ -282,8 +284,9 @@ tokencoin/
 │   └── tkc_crypto.c               # C++ extension (libsodium-based EC operations)
 │
 ├── network/                       # P2P networking
-│   ├── __init__.py                # Original network layer
+│   ├── __init__.py                # Network layer exports (including MiningP2PSubnet)
 │   ├── p2p.py                     # Fully P2P: Kademlia DHT, gossip protocol, peer scoring, NAT traversal
+│   ├── mining_p2p.py              # Fully decentralized mining subnet (DHT + gossip, no central server)
 │   └── tor_integration.py         # Tor daemon: hidden services, SOCKS5 proxy, circuit management
 │
 ├── ledger/                        # Blockchain & privacy
@@ -329,6 +332,7 @@ tokencoin/
 | File | Description |
 |---|---|
 | [`p2p.py`](tokencoin/network/p2p.py) | Fully decentralized P2P: Kademlia DHT (160 buckets), gossip protocol (TTL flooding), peer scoring (sybil resistance), NAT traversal |
+| [`mining_p2p.py`](tokencoin/network/mining_p2p.py) | **Fully decentralized mining subnet**: DHT + gossip based miner discovery, job distribution, first-come-first-served claiming, peer reputation — no central server, no static node list |
 | [`tor_integration.py`](tokencoin/network/tor_integration.py) | Tor daemon management: hidden service creation (v3 .onion), SOCKS5 proxy client, circuit management |
 
 ### Ledger ([`tokencoin/ledger/`](tokencoin/ledger/))
@@ -345,11 +349,12 @@ tokencoin/
 
 | Component | Description |
 |---|---|
-| [`OllamaOrchestrator`](tokencoin/consensus/__init__.py:195) | Hardware detection, model selection, inference job processing via Ollama |
-| [`DockerManager`](tokencoin/consensus/docker_nim.py:100) | Docker pull/run/stop for Ollama, GPU passthrough, health monitoring, auto-restart |
-| [`ZKIPVerifier`](tokencoin/consensus/__init__.py:145) | Zero-knowledge inference proof verification |
-| [`DifficultyAdjuster`](tokencoin/consensus/__init__.py:280) | Dynamic difficulty targeting 5-minute blocks |
-| [`SlashingManager`](tokencoin/consensus/__init__.py:310) | Penalizes dishonest miners |
+| [`OllamaOrchestrator`](tokencoin/consensus/__init__.py:234) | Hardware detection, model selection, inference job processing via Ollama; integrates with P2P mining subnet for remote miner discovery |
+| [`DockerManager`](tokencoin/consensus/docker_nim.py:112) | Docker pull/run/stop for Ollama, GPU passthrough, health monitoring, auto-restart |
+| [`ZKIPVerifier`](tokencoin/consensus/__init__.py:155) | Zero-knowledge inference proof verification |
+| [`DifficultyAdjuster`](tokencoin/consensus/__init__.py:555) | Dynamic difficulty targeting 5-minute blocks |
+| [`SlashingManager`](tokencoin/consensus/__init__.py:611) | Penalizes dishonest miners |
+| [`MiningP2PSubnet`](tokencoin/network/mining_p2p.py:183) | Fully decentralized P2P miner discovery and job distribution (replaces static remote_instances) |
 
 ### Wallet ([`tokencoin/wallet/`](tokencoin/wallet/))
 
@@ -487,26 +492,57 @@ docker run -d --device /dev/kfd --device /dev/dri \
 
 ## Distributed Mining
 
-TokenCoin supports distributed mining across multiple Ollama instances:
+TokenCoin supports fully distributed mining across a global P2P network with **no central server** and **no static node list**.
 
-### Adding Remote Instances
+### How It Works
 
-Configure remote Ollama instances in your config or via environment:
+The [`MiningP2PSubnet`](tokencoin/network/mining_p2p.py:183) is a fully decentralized mining subnet built on top of the existing Kademlia DHT and gossip protocol:
+
+1. **Miner Discovery:** Every miner broadcasts its hardware capabilities (backend, GPU, VRAM, models) via `MINER_REGISTER` gossip messages. The Kademlia DHT routes these messages across the network.
+2. **Dynamic Registry:** Each node maintains a live registry of all known miners. Peers score each other based on successful job completions (sybil resistance).
+3. **Job Distribution:** Any node can announce an inference job via `JOB_ANNOUNCE` gossip. The job is propagated to the entire subnet.
+4. **First-Come, First-Served:** Miners claim jobs via `JOB_CLAIM` messages. The first claimant wins.
+5. **Result Submission:** Completed results are submitted via `JOB_RESULT` gossip. Peer scores are updated based on successful completions.
+6. **Self-Healing:** Dead peers are automatically evicted after 30 minutes. Stale jobs are cleaned up after 1 hour. Miners re-announce their presence every 2 minutes.
+
+### No Configuration Needed
 
 ```bash
-# Via config (tokencoin/config.py)
-# CONFIG.ollama.remote_instances = ["192.168.1.100:11434", "mining-node.local:11434"]
+# Just start mining — the P2P subnet auto-discovers other miners
+tokencoin mine start --model phi3:mini
 
-# Or set environment variable
-export TKC_REMOTE_INSTANCES="192.168.1.100:11434,mining-node.local:11434"
+# The old remote_instances config has been removed.
+# Miners are discovered dynamically through the DHT + gossip protocol.
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 P2P Network (DHT)                    │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐          │
+│  │ Miner A  │  │ Miner B  │  │ Miner C  │          │
+│  │ (GPU)    │  │ (CPU)    │  │ (Apple)  │          │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘          │
+│       │             │             │                 │
+│       │  MINER_REGISTER (gossip)  │                 │
+│       │◄────────────┼────────────►│                 │
+│       │             │             │                 │
+│       │  JOB_ANNOUNCE             │                 │
+│       │──────────────────────────►│                 │
+│       │◄── JOB_CLAIM ──────────── │                 │
+│       │             │             │                 │
+│       │  JOB_RESULT               │                 │
+│       │◄──────────────────────────│                 │
+└───────┴─────────────┴─────────────┴─────────────────┘
 ```
 
 ### How Distributed Mining Works
 
 1. **Local Instance:** Your local Ollama daemon runs the primary mining model
-2. **Remote Instances:** Additional Ollama servers contribute inference capacity
-3. **Health Monitoring:** The orchestrator continuously checks all instances
-4. **Load Distribution:** Jobs are distributed to the healthiest, least-loaded instance
+2. **P2P Discovery:** Other miners on the network are discovered automatically via the DHT — no manual configuration needed
+3. **Health Monitoring:** The orchestrator continuously checks local and P2P-discovered instances
+4. **Load Distribution:** Jobs are distributed to the healthiest, highest-reputation instance
 5. **Verification:** All results are verified via ZKIP regardless of which instance processed them
 
 ### Hardware Backend Detection

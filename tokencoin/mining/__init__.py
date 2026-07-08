@@ -137,6 +137,10 @@ class Miner:
     """
     The main mining controller.
     Provides the one-click "Start AI Mining" interface.
+
+    Supports fully decentralized P2P miner discovery via the MiningP2PSubnet.
+    When a P2P subnet is attached, miners are discovered dynamically through
+    the DHT + gossip protocol instead of a static list of nodes.
     """
 
     def __init__(self, blockchain: Blockchain):
@@ -148,6 +152,15 @@ class Miner:
         self._start_time: float = 0.0
         self._status_callbacks: List[Callable] = []
         self._stats_callbacks: List[Callable] = []
+
+    def attach_p2p_subnet(self, subnet):
+        """
+        Attach a P2P mining subnet for fully decentralized miner discovery.
+        This replaces the old static remote_instances list with dynamic
+        discovery via the Kademlia DHT + gossip protocol.
+        """
+        self.consensus.set_p2p_subnet(subnet)
+        logger.info("P2P mining subnet attached to miner")
 
     def initialize(self, keypair: KeyPair):
         """Initialize the miner with a keypair."""

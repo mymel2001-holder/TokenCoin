@@ -31,6 +31,7 @@ from tokencoin.config import CONFIG
 from tokencoin.core.crypto import (
     PublicKey, PrivateKey, KeyPair, base32_encode, base32_decode,
 )
+from tokencoin.network.mining_p2p import MiningP2PSubnet
 
 logger = logging.getLogger(__name__)
 
@@ -598,6 +599,22 @@ class P2PNode:
         self._pending_jobs: Dict[str, bytes] = {}  # job_id -> job_data
         self._miner_capabilities: Dict[str, Dict] = {}  # node_id -> capabilities
 
+        # P2P Mining Subnet (fully decentralized miner discovery)
+        self.mining_subnet: Optional[MiningP2PSubnet] = None
+
+    def create_mining_subnet(self) -> MiningP2PSubnet:
+        """
+        Create and attach a P2P mining subnet for fully decentralized
+        miner discovery and job distribution (no central server).
+
+        This replaces the old CONFIG.ollama.remote_instances static list.
+        Miners are discovered via the Kademlia DHT + gossip protocol.
+        """
+        self.mining_subnet = MiningP2PSubnet(node_id=self.node_id, p2p_node=self)
+        logger.info("Mining P2P subnet created for node "
+                     f"{self.node_id[:16]}...")
+        return self.mining_subnet
+
     def on_transaction(self, callback: Callable):
         """Register callback for incoming transactions."""
         self._on_tx = callback
@@ -857,6 +874,10 @@ class P2PNode:
         payload_str = msg.payload.decode(errors="replace")
         job_id = payload_str.split(":")[0] if ":" in payload_str else payload_str
 
+        # Jobs from the P2P mining subnet are handled via MiningSubnetJob
+        # serialization (announced through the subnet's announce_job method).
+        # Raw JOB_ANNOUNCE messages are handled by the existing job flow.
+
         if self._on_job and job_id not in self._pending_jobs:
             # Request full job data
             req = GossipMessage(
@@ -904,6 +925,10 @@ class P2PNode:
             data = json.loads(msg.payload.decode())
             if self._on_job_result:
                 await self._on_job_result(data.get("job_id", ""), data.get("result", {}))
+
+            # Route through the P2P mining subnet if available
+            if self.mining_subnet:
+                self.mining_subnet.handle_job_result(msg.payload)
         except (json.JSONDecodeError, KeyError) as e:
             logger.debug(f"Invalid job result: {e}")
 
@@ -916,8 +941,10 @@ class P2PNode:
         """Handle a miner claiming a job."""
         job_id = msg.payload.decode()
         logger.info(f"Miner {msg.sender_id[:16]}... claimed job {job_id}")
-        # The claiming miner will process the job; the original node
-        # can track this for status updates
+
+        # Route through the P2P mining subnet if available
+        if self.mining_subnet:
+            self.mining_subnet.handle_job_claim(job_id, msg.sender_id)
 
     async def _handle_miner_register(self, msg: GossipMessage, writer):
         """Handle a miner registering its capabilities."""
@@ -930,6 +957,10 @@ class P2PNode:
             }
             logger.debug(f"Miner registered: {msg.sender_id[:16]}... "
                         f"({capabilities.get('backend', 'unknown')})")
+
+            # Route through the P2P mining subnet if available
+            if self.mining_subnet:
+                self.mining_subnet.handle_miner_register(msg.payload, msg.sender_id)
         except json.JSONDecodeError:
             pass
 

@@ -22,3 +22,4 @@ from tokencoin.ledger import Blockchain, Transaction, Block
 from tokencoin.wallet import Wallet
 from tokencoin.mining import Miner
 from tokencoin.consensus import ConsensusEngine
+from tokencoin.network import MiningP2PSubnet
