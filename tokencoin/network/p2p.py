@@ -55,6 +55,13 @@ class GossipType(Enum):
     SYNC_RESPONSE = 0x0C    # Blockchain sync response
     PEER_SCORE = 0x0D       # Peer reputation score exchange
     NAT_TRAVERSAL = 0x0E    # NAT traversal helper
+    JOB_ANNOUNCE = 0x0F     # New inference job announcement (PoUW)
+    JOB_REQUEST = 0x10      # Request full inference job data
+    JOB_RESPONSE = 0x11     # Full inference job data
+    JOB_RESULT = 0x12       # Inference job result submission
+    JOB_CLAIM = 0x13        # Miner claims a job (bidding)
+    MINER_REGISTER = 0x14   # Miner registers capabilities
+    MINER_LIST = 0x15       # List of available miners
 
 
 @dataclass
@@ -586,6 +593,10 @@ class P2PNode:
         self._running = False
         self._on_tx: Optional[Callable] = None
         self._on_block: Optional[Callable] = None
+        self._on_job: Optional[Callable] = None  # Callback for incoming inference jobs
+        self._on_job_result: Optional[Callable] = None  # Callback for job results
+        self._pending_jobs: Dict[str, bytes] = {}  # job_id -> job_data
+        self._miner_capabilities: Dict[str, Dict] = {}  # node_id -> capabilities
 
     def on_transaction(self, callback: Callable):
         """Register callback for incoming transactions."""
@@ -594,6 +605,14 @@ class P2PNode:
     def on_block(self, callback: Callable):
         """Register callback for incoming blocks."""
         self._on_block = callback
+
+    def on_job(self, callback: Callable):
+        """Register callback for incoming inference jobs (PoUW)."""
+        self._on_job = callback
+
+    def on_job_result(self, callback: Callable):
+        """Register callback for completed job results."""
+        self._on_job_result = callback
 
     async def start(self, port: int = 0) -> int:
         """Start the P2P node."""
@@ -608,6 +627,13 @@ class P2PNode:
         self.transport.register_handler(GossipType.BLOCK_ANNOUNCE, self._handle_block_announce)
         self.transport.register_handler(GossipType.BLOCK_REQUEST, self._handle_block_request)
         self.transport.register_handler(GossipType.BLOCK_RESPONSE, self._handle_block_response)
+        self.transport.register_handler(GossipType.JOB_ANNOUNCE, self._handle_job_announce)
+        self.transport.register_handler(GossipType.JOB_REQUEST, self._handle_job_request)
+        self.transport.register_handler(GossipType.JOB_RESPONSE, self._handle_job_response)
+        self.transport.register_handler(GossipType.JOB_RESULT, self._handle_job_result)
+        self.transport.register_handler(GossipType.JOB_CLAIM, self._handle_job_claim)
+        self.transport.register_handler(GossipType.MINER_REGISTER, self._handle_miner_register)
+        self.transport.register_handler(GossipType.MINER_LIST, self._handle_miner_list)
 
         # Start transport
         actual_port = await self.transport.start(port=port)
@@ -776,3 +802,162 @@ class P2PNode:
     async def _handle_block_response(self, msg: GossipMessage, writer):
         if self._on_block:
             await self._on_block(msg.payload)
+
+    # --- Inference Job Handlers (PoUW Distribution) ---
+
+    async def broadcast_job(self, job_id: str, job_data: bytes):
+        """Broadcast an inference job to the mining network."""
+        self._pending_jobs[job_id] = job_data
+        msg = GossipMessage(
+            msg_type=GossipType.JOB_ANNOUNCE,
+            payload=job_id.encode() + b":" + job_data[:256],  # ID + preview
+            sender_id=self.node_id,
+        )
+        await self.transport.broadcast(msg)
+        logger.info(f"Broadcast job {job_id} to mining network")
+
+    async def broadcast_miner_capabilities(self, capabilities: Dict):
+        """Register this node's mining capabilities with the network."""
+        payload = json.dumps(capabilities).encode()
+        msg = GossipMessage(
+            msg_type=GossipType.MINER_REGISTER,
+            payload=payload,
+            sender_id=self.node_id,
+        )
+        await self.transport.broadcast(msg)
+        logger.info(f"Registered miner capabilities: {capabilities.get('backend', 'unknown')}")
+
+    async def claim_job_network(self, job_id: str) -> bool:
+        """Claim a job from the network."""
+        msg = GossipMessage(
+            msg_type=GossipType.JOB_CLAIM,
+            payload=job_id.encode(),
+            sender_id=self.node_id,
+        )
+        await self.transport.broadcast(msg)
+        return True
+
+    async def submit_job_result(self, job_id: str, result: Dict):
+        """Submit a completed job result back to the network."""
+        payload = json.dumps({"job_id": job_id, "result": result}).encode()
+        msg = GossipMessage(
+            msg_type=GossipType.JOB_RESULT,
+            payload=payload,
+            sender_id=self.node_id,
+        )
+        await self.transport.broadcast(msg)
+        logger.info(f"Submitted result for job {job_id}")
+
+    async def _handle_job_announce(self, msg: GossipMessage, writer):
+        """Handle a new inference job announcement."""
+        if self.dht.seen(msg.msg_id):
+            return
+
+        # Parse job ID from payload
+        payload_str = msg.payload.decode(errors="replace")
+        job_id = payload_str.split(":")[0] if ":" in payload_str else payload_str
+
+        if self._on_job and job_id not in self._pending_jobs:
+            # Request full job data
+            req = GossipMessage(
+                msg_type=GossipType.JOB_REQUEST,
+                payload=job_id.encode(),
+                sender_id=self.node_id,
+            )
+            await self.transport.send(msg.sender_id, req)
+
+        # Re-broadcast (gossip)
+        if msg.ttl > 0:
+            msg.ttl -= 1
+            await self.transport.broadcast(msg, exclude={msg.sender_id})
+
+    async def _handle_job_request(self, msg: GossipMessage, writer):
+        """Handle a request for full job data."""
+        job_id = msg.payload.decode()
+        job_data = self._pending_jobs.get(job_id)
+        if job_data:
+            response = GossipMessage(
+                msg_type=GossipType.JOB_RESPONSE,
+                payload=job_id.encode() + b":" + job_data,
+                sender_id=self.node_id,
+            )
+            data = response.serialize()
+            writer.write(struct.pack("!I", len(data)))
+            writer.write(data)
+            await writer.drain()
+
+    async def _handle_job_response(self, msg: GossipMessage, writer):
+        """Handle full job data response."""
+        payload = msg.payload
+        if b":" in payload:
+            job_id, job_data = payload.split(b":", 1)
+            jid = job_id.decode()
+            self._pending_jobs[jid] = job_data
+            if self._on_job:
+                await self._on_job(jid, job_data)
+
+    async def _handle_job_result(self, msg: GossipMessage, writer):
+        """Handle a completed job result."""
+        if self.dht.seen(msg.msg_id):
+            return
+        try:
+            data = json.loads(msg.payload.decode())
+            if self._on_job_result:
+                await self._on_job_result(data.get("job_id", ""), data.get("result", {}))
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.debug(f"Invalid job result: {e}")
+
+        # Re-broadcast
+        if msg.ttl > 0:
+            msg.ttl -= 1
+            await self.transport.broadcast(msg, exclude={msg.sender_id})
+
+    async def _handle_job_claim(self, msg: GossipMessage, writer):
+        """Handle a miner claiming a job."""
+        job_id = msg.payload.decode()
+        logger.info(f"Miner {msg.sender_id[:16]}... claimed job {job_id}")
+        # The claiming miner will process the job; the original node
+        # can track this for status updates
+
+    async def _handle_miner_register(self, msg: GossipMessage, writer):
+        """Handle a miner registering its capabilities."""
+        try:
+            capabilities = json.loads(msg.payload.decode())
+            self._miner_capabilities[msg.sender_id] = {
+                **capabilities,
+                "last_seen": time.time(),
+                "node_id": msg.sender_id,
+            }
+            logger.debug(f"Miner registered: {msg.sender_id[:16]}... "
+                        f"({capabilities.get('backend', 'unknown')})")
+        except json.JSONDecodeError:
+            pass
+
+        # Re-broadcast
+        if msg.ttl > 0:
+            msg.ttl -= 1
+            await self.transport.broadcast(msg, exclude={msg.sender_id})
+
+    async def _handle_miner_list(self, msg: GossipMessage, writer):
+        """Respond with list of known miners."""
+        miners = [
+            info for info in self._miner_capabilities.values()
+            if time.time() - info.get("last_seen", 0) < 600  # 10 min
+        ]
+        payload = json.dumps(miners[:50]).encode()
+        response = GossipMessage(
+            msg_type=GossipType.MINER_LIST,
+            payload=payload,
+            sender_id=self.node_id,
+        )
+        data = response.serialize()
+        writer.write(struct.pack("!I", len(data)))
+        writer.write(data)
+        await writer.drain()
+
+    def get_available_miners(self) -> List[Dict]:
+        """Get list of available miners on the network."""
+        return [
+            info for info in self._miner_capabilities.values()
+            if time.time() - info.get("last_seen", 0) < 600
+        ]

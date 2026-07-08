@@ -2,8 +2,10 @@
 
 **TokenCoin** is a next-generation, privacy-first cryptocurrency that fuses decentralized AI inference with private financial transactions. Instead of wasting energy on arbitrary Proof-of-Work (PoW) hashes, TokenCoin utilizes **Proof-of-Useful-Work (PoUW)** — miners contribute computational power to a global, decentralized cluster of **Ollama** instances, supporting CPU, NVIDIA GPU (CUDA), AMD GPU (ROCm), and Apple Silicon (Metal).
 
-> **Status:** Alpha — Reference Implementation  
-> **Author:** Sammy Lord  
+TokenCoin exposes a **public, OpenAI-compatible API** (`/v1/chat/completions`, `/v1/embeddings`) that routes inference requests to the distributed mining network. External users call it like they would OpenAI, while miners earn TKC for processing the requests.
+
+> **Status:** Alpha — Reference Implementation
+> **Author:** Sammy Lord
 > **License:** MIT
 
 ---
@@ -14,6 +16,7 @@
 - [Key Features](#key-features)
 - [Quick Start](#quick-start)
 - [CLI Usage](#cli-usage)
+- [Public OpenAI-Compatible API](#public-openai-compatible-api)
 - [Project Structure](#project-structure)
 - [Modules](#modules)
 - [Running Tests](#running-tests)
@@ -92,6 +95,8 @@ Every wallet is also a full node. There are **no central bootstrap nodes**, no c
 | **Dynamic Difficulty** | Targets 5-minute block times ([`DifficultyAdjuster`](tokencoin/consensus/__init__.py:280)) |
 | **Slashing** | Penalizes dishonest miners ([`SlashingManager`](tokencoin/consensus/__init__.py:310)) |
 | **One-Click Toggle** | [`Miner.toggle()`](tokencoin/mining/__init__.py:130) with real-time hardware stats and TKC rate |
+| **P2P Job Distribution** | Inference jobs broadcast via DHT gossip protocol ([`P2PNode.broadcast_job()`](tokencoin/network/p2p.py:780)) |
+| **Public OpenAI API** | Unified `/v1/chat/completions` and `/v1/embeddings` endpoint ([`OpenAIServer`](tokencoin/api/__init__.py:300)) |
 | **Distributed Mining** | Connect remote Ollama instances for cluster mining ([`OllamaManager.add_remote_instance()`](tokencoin/mining/ollama_miner.py:300)) |
 | **Docker Deployment** | Run Ollama in Docker for isolated mining ([`DockerManager`](tokencoin/consensus/docker_nim.py:100)) |
 
@@ -202,7 +207,57 @@ tokencoin blockchain info
 
 # View blockchain height
 tokencoin blockchain height
+
+# Start the public OpenAI-compatible API server
+tokencoin api start --port 8080
 ```
+
+### Public OpenAI-Compatible API
+
+TokenCoin exposes a **unified, OpenAI-compatible API** that routes inference requests to the distributed mining network. External users call it like OpenAI, while miners earn TKC for processing the requests.
+
+```bash
+# Start the API server
+tokencoin api start --port 8080
+```
+
+**Chat completion** (routed to distributed miners):
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "phi3-mini",
+    "messages": [{"role": "user", "content": "What is TokenCoin?"}],
+    "max_tokens": 128
+  }'
+```
+
+**Embeddings**:
+```bash
+curl http://localhost:8080/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "nomic-embed-text",
+    "input": "TokenCoin is a privacy-first AI cryptocurrency"
+  }'
+```
+
+**List models**:
+```bash
+curl http://localhost:8080/v1/models
+```
+
+**Health check**:
+```bash
+curl http://localhost:8080/v1/health
+```
+
+**How it works:**
+1. External users call the API like OpenAI (`/v1/chat/completions`, `/v1/embeddings`)
+2. The API server creates a PoUW inference job and broadcasts it via the P2P gossip protocol
+3. Available miners on the network claim and process the job using their local Ollama instance
+4. The result is returned to the external user
+5. The miner earns TKC block rewards for the useful work
 
 ---
 

@@ -79,25 +79,57 @@ TokenCoin replaces traditional cryptographic hashing with verifiable AI inferenc
 
 When a user clicks "Mine" in the TokenCoin client, the software connects to a local or remote **Ollama** instance.
 
-* The node registers its hardware capabilities (CPU cores, RAM, GPU type/VRAM) to the decentralized public cluster via a DHT (Distributed Hash Table).  
-* The cluster serves public-facing AI requests (LLMs, vision models, embedding models).  
+* The node registers its hardware capabilities (CPU cores, RAM, GPU type/VRAM) to the decentralized public cluster via a DHT (Distributed Hash Table).
+* The cluster serves public-facing AI requests (LLMs, vision models, embedding models) via a unified OpenAI-compatible API.
 * Supports CPU-only mining, NVIDIA GPU (CUDA), AMD GPU (ROCm), and Apple Silicon (Metal).
 
-### **5.2 Proof-of-Useful-Work Verification**
+### **5.2 Public OpenAI-Compatible API**
+
+TokenCoin exposes a unified API endpoint that routes inference requests to the distributed mining network:
+
+```
+External User
+    |
+    v
+POST /v1/chat/completions  -->  OpenAIServer (tokencoin api start)
+    |                              |
+    |                              +--> Try local Ollama (fast path)
+    |                              |
+    |                              +--> Broadcast job via P2P gossip
+    |                                       |
+    |                                       v
+    |                              Mining Network (DHT)
+    |                              +--> Miner A claims job
+    |                              +--> Miner B claims job
+    |                              +--> Miner C claims job
+    |
+    v
+Returns OpenAI-compatible JSON response
+```
+
+**Endpoints:**
+- `POST /v1/chat/completions` — Chat completions (streaming supported)
+- `POST /v1/embeddings` — Text embeddings
+- `GET /v1/models` — List available models
+- `GET /v1/health` — Server health and mining network status
+
+### **5.3 Proof-of-Useful-Work Verification**
 
 To prevent spoofing or lazy nodes, TokenCoin uses a deterministic verification method:
 
-1. **Zero-Knowledge Inference Proofs (ZKIP):** Random inference requests are sent with strict seed parameters. The node must return the output tokens along with a cryptographic commitment of the intermediate tensor weights.  
+1. **Zero-Knowledge Inference Proofs (ZKIP):** Random inference requests are sent with strict seed parameters. The node must return the output tokens along with a cryptographic commitment of the intermediate tensor weights.
 2. **Slashing and Rewards:** If a node returns a malformed tensor calculation (indicating it didn't actually run the model or used underpowered hardware), its stake/reputation is slashed. If it successfully processes valid user requests, it generates a "Work Block," which rewards the miner with freshly minted TKC.
 
-### **5.3 Distributed Mining Architecture**
+### **5.4 Distributed Mining Architecture**
 
-TokenCoin supports a distributed mining topology:
+TokenCoin supports a fully distributed mining topology:
 
 - **Local Mining:** Run Ollama directly on your machine (CPU, GPU, or Apple Silicon)
 - **Remote Instances:** Connect to remote Ollama servers for distributed mining
+- **P2P Job Distribution:** Inference jobs are broadcast via the Kademlia DHT gossip protocol. Miners claim jobs and submit results back through the network.
 - **Docker Deployment:** Deploy Ollama via Docker for isolated, scalable mining
 - **Auto-Discovery:** The DHT automatically discovers and registers mining nodes
+- **Unified API:** All mining nodes contribute to a single, public OpenAI-compatible endpoint
 
 ## **6\. User Interface & Wallet Design**
 

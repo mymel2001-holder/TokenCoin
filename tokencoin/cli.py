@@ -31,6 +31,7 @@ from tokencoin.core.crypto import KeyPair
 from tokencoin.ledger import Blockchain
 from tokencoin.wallet import Wallet, WalletBalance
 from tokencoin.mining import Miner, MiningStatus
+from tokencoin.api import OpenAIServer
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class CLI:
         self.blockchain = Blockchain()
         self.wallet = Wallet(self.blockchain)
         self.miner = Miner(self.blockchain)
+        self.api_server: Optional[OpenAIServer] = None
         self._running = False
 
     def handle_wallet_create(self, args):
@@ -194,6 +196,34 @@ class CLI:
         print(f"  Instances: {stats.instances_healthy}/{stats.instances_total} healthy")
         print(f"{'='*60}\n")
 
+    def handle_api_start(self, args):
+        """Start the OpenAI-compatible API server."""
+        port = args.port or 8080
+        host = args.host or "0.0.0.0"
+
+        print(f"Starting OpenAI-compatible API server on {host}:{port}...")
+        print(f"  POST /v1/chat/completions - Chat completions")
+        print(f"  POST /v1/embeddings - Embeddings")
+        print(f"  GET  /v1/models - List models")
+        print(f"  GET  /v1/health - Health check")
+        print("Press Ctrl+C to stop...")
+
+        async def run():
+            # Create and start the API server
+            ollama_mgr = self.miner.consensus.orchestrator.manager
+            self.api_server = OpenAIServer(ollama_mgr)
+            await self.api_server.start(host=host, port=port)
+
+            try:
+                while True:
+                    await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await self.api_server.stop()
+
+        asyncio.run(run())
+
     def handle_blockchain_info(self, args):
         """Show blockchain information."""
         state = self.blockchain.state
@@ -261,6 +291,17 @@ class CLI:
 
         mine_status = mine_sub.add_parser("status", help="Show mining status")
         mine_status.set_defaults(handler=self.handle_mine_status)
+
+        # API server commands
+        api_parser = subparsers.add_parser("api", help="OpenAI-compatible API server")
+        api_sub = api_parser.add_subparsers(dest="api_cmd")
+
+        api_start = api_sub.add_parser("start", help="Start the API server")
+        api_start.add_argument("--host", default="0.0.0.0",
+                               help="Host to bind to (default: 0.0.0.0)")
+        api_start.add_argument("--port", "-p", type=int, default=8080,
+                               help="Port to listen on (default: 8080)")
+        api_start.set_defaults(handler=self.handle_api_start)
 
         # Blockchain commands
         bc_parser = subparsers.add_parser("blockchain", help="Blockchain info")
