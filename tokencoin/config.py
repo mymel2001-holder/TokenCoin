@@ -15,7 +15,21 @@ import os
 # ---------------------------------------------------------------------------
 @dataclass
 class MonetaryPolicy:
-    """TokenCoin monetary policy parameters."""
+    """TokenCoin monetary policy parameters.
+
+    Implements a smooth emission curve (Monero-style) rather than
+    Bitcoin's discrete halving events. This ensures fair, unbiased
+    printing of new coins — rewards decrease smoothly and asymptotically,
+    never reaching zero, so mining is always rewarded.
+
+    Key design:
+      - max_supply: Hard cap (10 Trillion TKC)
+      - base_supply: Pre-mined supply before mining begins (6.4B TKC)
+      - initial_block_reward: Starting reward per block (12 TKC)
+      - tail_emission: Minimum reward floor (0.1 TKC) — ensures mining
+        is always viable, even as supply approaches the cap
+      - block_time_seconds: Target block time (5 minutes)
+    """
     # Maximum total supply: 10 Trillion TKC (10_000_000_000_000)
     max_supply: int = 10_000_000_000_000
 
@@ -25,14 +39,12 @@ class MonetaryPolicy:
     # Starting block reward (TKC)
     initial_block_reward: int = 12  # 12 TKC per block
 
+    # Tail emission floor (TKC) — minimum reward per block forever
+    # This ensures "fair, unbiased printing" never stops
+    tail_emission: int = 1  # 1 TKC floor (atomic: 1_000_000_000)
+
     # Block target time (seconds) - 5 minutes
     block_time_seconds: int = 300
-
-    # Halving interval (blocks) - approximately every 4 years
-    halving_interval: int = 210_000
-
-    # Minimum block reward (cannot go below this)
-    min_block_reward: int = 1  # 1 TKC floor
 
 
 # ---------------------------------------------------------------------------

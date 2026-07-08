@@ -21,6 +21,7 @@ from enum import Enum
 
 from tokencoin.config import CONFIG
 from tokencoin.core.crypto import KeyPair
+from tokencoin.core.emission import EmissionCurve, atomic_to_tkc
 from tokencoin.consensus import (
     ConsensusEngine, OllamaOrchestrator, HardwareInfo, OllamaModel,
     OLLAMA_MODELS, InferenceJob, InferenceResult,
@@ -243,17 +244,17 @@ class Miner:
             self.stats.network_difficulty = self.blockchain.state.difficulty
             self.stats.blockchain_height = self.blockchain.state.height
 
-            # Estimate TKC generation rate
+            # Estimate TKC generation rate using smooth emission curve
             if self.stats.uptime_seconds > 0:
                 blocks_per_hour = (self.stats.blocks_mined /
                                    (self.stats.uptime_seconds / 3600))
                 if blocks_per_hour > 0:
-                    reward_per_block = max(
-                        CONFIG.monetary.initial_block_reward >>
-                        (self.blockchain.state.height // CONFIG.monetary.halving_interval),
-                        CONFIG.monetary.min_block_reward
-                    )
-                    self.stats.tkc_generation_rate = blocks_per_hour * reward_per_block
+                    # Use the emission curve to get the current block reward
+                    curve = EmissionCurve()
+                    current_supply = self.blockchain.state.total_supply
+                    reward_per_block_atomic = curve.block_reward(current_supply)
+                    reward_per_block_tkc = atomic_to_tkc(reward_per_block_atomic)
+                    self.stats.tkc_generation_rate = blocks_per_hour * reward_per_block_tkc
 
         return self.stats
 
@@ -281,21 +282,26 @@ class Miner:
         """
         The main mining loop.
         Continuously processes inference jobs and mines blocks.
+        Uses the smooth emission curve to calculate fair, unbiased rewards.
         """
+        curve = EmissionCurve()
         while True:
             try:
                 # Mine a block
                 block = await self.consensus.mine_block()
                 if block:
+                    # Calculate the block reward using the emission curve
+                    current_supply = self.blockchain.state.total_supply
+                    block_reward_atomic = curve.block_reward(current_supply)
+
                     # Add block to blockchain
-                    if self.blockchain.add_block(block):
+                    if self.blockchain.add_block(block, block_reward_atomic):
                         self.stats.blocks_mined += 1
-                        self.stats.total_reward_earned += (
-                            CONFIG.monetary.initial_block_reward
-                        )
+                        self.stats.total_reward_earned += block_reward_atomic
                         self.stats.jobs_completed += 1
                         logger.info(
                             f"Block {block.header.height} mined! "
+                            f"Reward: {atomic_to_tkc(block_reward_atomic):.4f} TKC | "
                             f"Total: {self.stats.blocks_mined}"
                         )
                     else:

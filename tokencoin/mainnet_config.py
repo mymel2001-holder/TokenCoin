@@ -20,9 +20,8 @@ def get_mainnet_config() -> TokenCoinConfig:
             max_supply=10_000_000_000_000,  # 10 Trillion TKC
             base_supply=6_400_000_000,       # 6.4B TKC
             initial_block_reward=12,         # 12 TKC per block
+            tail_emission=1,                 # 1 TKC floor (tail emission)
             block_time_seconds=300,          # 5 minutes
-            halving_interval=210_000,        # ~4 years
-            min_block_reward=1,              # 1 TKC floor
         ),
         network=NetworkConfig(
             address_length=56,

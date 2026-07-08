@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Set, Tuple, Any
 from collections import defaultdict
 
 from tokencoin.config import CONFIG
+from tokencoin.core.emission import EmissionCurve, atomic_to_tkc
 from tokencoin.core.crypto import (
     PrivateKey, PublicKey, KeyPair, KeyImage,
     PedersenCommitment, StealthAddress, RingSignature,
@@ -309,9 +310,13 @@ class Block:
 
 @dataclass
 class BlockchainState:
-    """Current state of the blockchain."""
+    """Current state of the blockchain.
+
+    All supply values are stored in atomic units (1 TKC = 1_000_000_000 atomic).
+    This ensures consistency with the EmissionCurve which operates in atomic units.
+    """
     height: int = 0
-    total_supply: int = CONFIG.monetary.base_supply
+    total_supply: int = CONFIG.monetary.base_supply * 1_000_000_000  # Atomic units
     difficulty: int = 1
     last_block_hash: bytes = b"\x00" * 32
 
@@ -381,8 +386,22 @@ class Blockchain:
         self.state.last_block_hash = genesis.hash()
         logger.info("Blockchain initialized with genesis block")
 
-    def add_block(self, block: Block) -> bool:
-        """Add a validated block to the chain."""
+    def add_block(self, block: Block,
+                  block_reward_atomic: Optional[int] = None) -> bool:
+        """
+        Add a validated block to the chain.
+
+        Args:
+            block: The block to add.
+            block_reward_atomic: The block reward in atomic units, calculated
+                from the smooth emission curve. If None, uses the old
+                initial_block_reward (for backward compatibility).
+
+        The block reward is determined by the EmissionCurve, ensuring
+        fair, unbiased printing of new coins. The reward smoothly decreases
+        as the supply approaches the max, and never drops below the tail
+        emission floor.
+        """
         # Check if we have the parent
         if self.state.height > 0:
             parent = self.chain[-1]
@@ -398,11 +417,17 @@ class Blockchain:
             logger.warning(f"Block validation failed at height {block.header.height}")
             return False
 
+        # Calculate the block reward from the emission curve
+        if block_reward_atomic is None:
+            # Fallback for backward compatibility
+            curve = EmissionCurve()
+            block_reward_atomic = curve.block_reward(self.state.total_supply)
+
         # Process transactions
         for tx in block.transactions:
             if tx.tx_type == TxType.COINBASE:
-                # Mint new coins
-                self.state.total_supply += CONFIG.monetary.initial_block_reward
+                # Mint new coins using the smooth emission curve reward
+                self.state.total_supply += block_reward_atomic
             else:
                 # Mark key images as spent
                 for inp in tx.inputs:
@@ -424,7 +449,11 @@ class Blockchain:
         # Check for orphans that can now be added
         self._process_orphans()
 
-        logger.info(f"Block {block.header.height} added to chain")
+        logger.info(
+            f"Block {block.header.height} added to chain | "
+            f"Reward: {atomic_to_tkc(block_reward_atomic):.4f} TKC | "
+            f"Supply: {atomic_to_tkc(self.state.total_supply):,.2f} TKC"
+        )
         return True
 
     def _process_orphans(self):
