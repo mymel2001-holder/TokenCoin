@@ -102,13 +102,13 @@ The TokenCoin client is a unified, user-friendly desktop and mobile application 
 
 ## **7\. Security and Technical Risks**
 
-```
+
 | Risk | Description | Mitigation |
 | :---- | :---- | :---- |
 | **Sybil AI Spoofing** | Miners manipulating software to pretend they ran a NIM model without using actual GPU power. | **Deterministic Tensor Verification.** Periodically challenge nodes with identical seeds; mismatches result in instant block disqualification. |
 | **Tor Latency** | Onion routing naturally introduces latency, potentially stalling block times. | Block times are targets for a generous **5 minutes**, with transactions held in localized mempools before final anchoring. |
 | **VRAM Bottlenecks** | Running local NIMs requires substantial VRAM, which might alienate casual users. | The orchestrator dynamically fragments models or assigns smaller embedding/Whisper models/small LLMs to consumer-grade GPUs depending on quant and \# of params. (e.g., 8GB VRAM). |
-```
+
 
 ## **8\. Important things not to forget.**
 
