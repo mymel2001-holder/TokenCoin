@@ -36,7 +36,7 @@ from tokencoin.ledger import (
 )
 from tokencoin.mining.ollama_miner import (
     OllamaManager, OllamaModel, OllamaInstance, HardwareInfo,
-    HardwareBackend, OLLAMA_MODELS, detect_hardware,
+    HardwareBackend, OLLAMA_MODELS, MODEL_REGISTRY, detect_hardware,
 )
 
 logger = logging.getLogger(__name__)
@@ -244,11 +244,8 @@ class OllamaOrchestrator:
 
     async def start(self, model_name: str) -> bool:
         """Start mining with the specified Ollama model."""
-        # Resolve model name
-        model = OLLAMA_MODELS.get(model_name)
-        if not model:
-            logger.error(f"Unknown model: {model_name}")
-            return False
+        # Resolve model name — supports any Ollama model dynamically
+        model = MODEL_REGISTRY.get(model_name)
 
         # Check hardware compatibility
         if not self.manager.hardware.can_run_model(model):

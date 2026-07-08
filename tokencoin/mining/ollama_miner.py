@@ -388,6 +388,14 @@ def _get_ollama_version() -> str:
 # Ollama Model Registry
 # ---------------------------------------------------------------------------
 
+# Regex to parse model name strings like "llama3.2:3b:q4_K_M" or "mistral:7b"
+_MODEL_NAME_RE = re.compile(
+    r"^(?P<name>[a-zA-Z0-9][a-zA-Z0-9_.-]+)"
+    r"(?::(?P<tag>[a-zA-Z0-9][a-zA-Z0-9_.-]+))?"
+    r"(?::(?P<quant>[a-zA-Z0-9_]+))?$"
+)
+
+
 @dataclass
 class OllamaModel:
     """Represents an Ollama model that can be used for mining."""
@@ -415,107 +423,189 @@ class OllamaModel:
             "parameters_b": self.parameters_billions,
             "quantization": self.quantization,
         }
+    
+    @classmethod
+    def from_name(cls, model_name: str) -> "OllamaModel":
+        """
+        Parse a model name string and create an OllamaModel.
+        
+        Accepts formats:
+          - "llama3.2"              -> name="llama3.2", tag="latest"
+          - "llama3.2:3b"           -> name="llama3.2", tag="3b"
+          - "llama3.2:3b:q4_K_M"   -> name="llama3.2", tag="3b", quantization="q4_K_M"
+          - "mistral:7b"            -> name="mistral", tag="7b"
+        
+        Memory estimate is derived from the tag (parameter count) if possible,
+        otherwise defaults to 4 GB.
+        """
+        m = _MODEL_NAME_RE.match(model_name)
+        if not m:
+            logger.warning(f"Could not parse model name '{model_name}', using as-is")
+            return cls(name=model_name, tag="latest")
+        
+        name = m.group("name")
+        tag = m.group("tag") or "latest"
+        quant = m.group("quant") or "q4_0"
+        
+        # Estimate parameter count from tag (e.g. "3b" -> 3.0, "70b" -> 70.0)
+        params = _estimate_parameters(tag)
+        
+        # Estimate minimum memory: ~4 GB base + ~0.5 GB per billion parameters at q4
+        min_mem = max(1.0, 4.0 + params * 0.5) if params > 0 else 4.0
+        
+        # Detect inference type from name
+        inf_type = "llm"
+        name_lower = name.lower()
+        if "embed" in name_lower:
+            inf_type = "embedding"
+        elif "vision" in name_lower or "clip" in name_lower:
+            inf_type = "vision"
+        
+        return cls(
+            name=name,
+            tag=tag,
+            min_memory_gb=min_mem,
+            inference_type=inf_type,
+            parameters_billions=params,
+            quantization=quant,
+        )
 
 
-# Pre-defined Ollama models suitable for mining
-# These are models that can run on various hardware backends
+def _estimate_parameters(tag: str) -> float:
+    """
+    Estimate parameter count in billions from a model tag string.
+    
+    Examples:
+      "3b"    -> 3.0
+      "7b"    -> 7.0
+      "70b"   -> 70.0
+      "1.5b"  -> 1.5
+      "8x7b"  -> 47.0 (mixture of experts: 8*7 - shared)
+      "mini"  -> 3.8
+      "small" -> 7.0
+      "large" -> 70.0
+    """
+    tag_lower = tag.lower()
+    
+    # Handle MoE patterns like "8x7b"
+    moe_match = re.match(r"(\d+)x(\d+)b?", tag_lower)
+    if moe_match:
+        num_experts = int(moe_match.group(1))
+        expert_size = float(moe_match.group(2))
+        # Rough estimate: total = num_experts * expert_size * 0.7 (shared params)
+        return round(num_experts * expert_size * 0.7, 1)
+    
+    # Handle patterns like "1.5b", "7b", "70b"
+    b_match = re.match(r"(\d+(?:\.\d+)?)b", tag_lower)
+    if b_match:
+        return float(b_match.group(1))
+    
+    # Handle patterns like "14b-instruct" -> extract "14b"
+    b_match2 = re.search(r"(\d+(?:\.\d+)?)b", tag_lower)
+    if b_match2:
+        return float(b_match2.group(1))
+    
+    # Named size tags
+    size_map = {
+        "mini": 3.8,
+        "small": 7.0,
+        "medium": 14.0,
+        "large": 70.0,
+        "xlarge": 120.0,
+        "nano": 1.5,
+        "micro": 0.5,
+    }
+    if tag_lower in size_map:
+        return size_map[tag_lower]
+    
+    return 0.0
+
+
+# Pre-defined Ollama models (example set)
+# NOTE: The dynamic ModelRegistry (MODEL_REGISTRY) is the primary way to resolve
+# models. Any Ollama model name is accepted and auto-configured via
+# OllamaModel.from_name(). This static dict is kept as a small example set
+# for backward compatibility and CLI convenience defaults.
 OLLAMA_MODELS: Dict[str, OllamaModel] = {
-    # Small models (CPU-friendly, 4-8GB RAM)
-    "phi3-mini": OllamaModel(
-        name="phi3",
-        tag="mini",
-        min_memory_gb=4.0,
-        inference_type="llm",
-        parameters_billions=3.8,
-        quantization="q4_0",
-    ),
-    "tinyllama": OllamaModel(
-        name="tinyllama",
-        tag="latest",
-        min_memory_gb=3.0,
-        inference_type="llm",
-        parameters_billions=1.1,
-        quantization="q4_0",
-    ),
-    "phi3-small": OllamaModel(
-        name="phi3",
-        tag="small",
-        min_memory_gb=6.0,
-        inference_type="llm",
-        parameters_billions=7.0,
-        quantization="q4_0",
-    ),
+    # Lightweight / CPU-friendly
+    "tinyllama": OllamaModel(name="tinyllama", tag="latest", min_memory_gb=3.0, inference_type="llm", parameters_billions=1.1, quantization="q4_0"),
+    "phi3-mini": OllamaModel(name="phi3", tag="mini", min_memory_gb=4.0, inference_type="llm", parameters_billions=3.8, quantization="q4_0"),
+    "llama3.2-3b": OllamaModel(name="llama3.2", tag="3b", min_memory_gb=4.0, inference_type="llm", parameters_billions=3.0, quantization="q4_0"),
+    "nomic-embed-text": OllamaModel(name="nomic-embed-text", tag="latest", min_memory_gb=2.0, inference_type="embedding", parameters_billions=0.14, quantization="q4_0"),
+    "all-minilm": OllamaModel(name="all-minilm", tag="latest", min_memory_gb=1.0, inference_type="embedding", parameters_billions=0.03, quantization="q4_0"),
     
-    # Medium models (GPU recommended, 8-16GB VRAM)
-    "llama3.2-3b": OllamaModel(
-        name="llama3.2",
-        tag="3b",
-        min_memory_gb=4.0,
-        inference_type="llm",
-        parameters_billions=3.0,
-        quantization="q4_0",
-    ),
-    "mistral-7b": OllamaModel(
-        name="mistral",
-        tag="7b",
-        min_memory_gb=8.0,
-        inference_type="llm",
-        parameters_billions=7.0,
-        quantization="q4_0",
-    ),
-    "llama3.1-8b": OllamaModel(
-        name="llama3.1",
-        tag="8b",
-        min_memory_gb=8.0,
-        inference_type="llm",
-        parameters_billions=8.0,
-        quantization="q4_0",
-    ),
-    "gemma2-9b": OllamaModel(
-        name="gemma2",
-        tag="9b",
-        min_memory_gb=10.0,
-        inference_type="llm",
-        parameters_billions=9.0,
-        quantization="q4_0",
-    ),
+    # GPU recommended
+    "mistral-7b": OllamaModel(name="mistral", tag="7b", min_memory_gb=8.0, inference_type="llm", parameters_billions=7.0, quantization="q4_0"),
+    "llama3.1-8b": OllamaModel(name="llama3.1", tag="8b", min_memory_gb=8.0, inference_type="llm", parameters_billions=8.0, quantization="q4_0"),
+    "phi4-14b": OllamaModel(name="phi4", tag="14b", min_memory_gb=12.0, inference_type="llm", parameters_billions=14.0, quantization="q4_0"),
+    "llama4-scout-17b": OllamaModel(name="llama4-scout", tag="17b", min_memory_gb=12.0, inference_type="llm", parameters_billions=17.0, quantization="q4_0"),
     
-    # Large models (high-end GPU, 16-32GB VRAM)
-    "llama3.1-70b": OllamaModel(
-        name="llama3.1",
-        tag="70b",
-        min_memory_gb=40.0,
-        inference_type="llm",
-        parameters_billions=70.0,
-        quantization="q4_0",
-    ),
-    "mixtral-8x7b": OllamaModel(
-        name="mixtral",
-        tag="8x7b",
-        min_memory_gb=32.0,
-        inference_type="llm",
-        parameters_billions=47.0,
-        quantization="q4_0",
-    ),
-    
-    # Embedding models (lightweight, good for CPU)
-    "nomic-embed-text": OllamaModel(
-        name="nomic-embed-text",
-        tag="latest",
-        min_memory_gb=2.0,
-        inference_type="embedding",
-        parameters_billions=0.14,
-        quantization="q4_0",
-    ),
-    "all-minilm": OllamaModel(
-        name="all-minilm",
-        tag="latest",
-        min_memory_gb=1.0,
-        inference_type="embedding",
-        parameters_billions=0.03,
-        quantization="q4_0",
-    ),
+    # High-end GPU
+    "llama3.1-70b": OllamaModel(name="llama3.1", tag="70b", min_memory_gb=40.0, inference_type="llm", parameters_billions=70.0, quantization="q4_0"),
+    "mixtral-8x7b": OllamaModel(name="mixtral", tag="8x7b", min_memory_gb=32.0, inference_type="llm", parameters_billions=47.0, quantization="q4_0"),
 }
+
+
+class ModelRegistry:
+    """
+    Registry for Ollama models that supports both predefined models
+    and dynamic resolution of any model name.
+    
+    Usage:
+        registry = ModelRegistry()
+        model = registry.get("llama3.2:3b")       # predefined
+        model = registry.get("deepseek-coder:33b") # dynamic fallback
+        model = registry.get("any-model:latest")   # always works
+    """
+    
+    def __init__(self, predefined: Optional[Dict[str, OllamaModel]] = None):
+        self._predefined = dict(predefined or OLLAMA_MODELS)
+    
+    def get(self, name: str) -> OllamaModel:
+        """
+        Resolve a model name to an OllamaModel.
+        
+        First checks the predefined registry, then falls back to
+        dynamic parsing via OllamaModel.from_name().
+        """
+        # Direct lookup in predefined
+        if name in self._predefined:
+            return self._predefined[name]
+        
+        # Try matching by full_name (name:tag)
+        for key, model in self._predefined.items():
+            if model.full_name == name:
+                return model
+        
+        # Dynamic fallback — any Ollama model works
+        logger.info(f"Model '{name}' not in predefined registry, resolving dynamically")
+        return OllamaModel.from_name(name)
+    
+    def __contains__(self, name: str) -> bool:
+        return name in self._predefined
+    
+    def __getitem__(self, name: str) -> OllamaModel:
+        return self.get(name)
+    
+    def __len__(self) -> int:
+        return len(self._predefined)
+    
+    def keys(self):
+        return self._predefined.keys()
+    
+    def items(self):
+        return self._predefined.items()
+    
+    def values(self):
+        return self._predefined.values()
+    
+    def list(self) -> List[Dict[str, Any]]:
+        """List all predefined models as dicts."""
+        return [m.to_dict() for m in self._predefined.values()]
+
+
+# Global singleton registry — used throughout the codebase
+MODEL_REGISTRY = ModelRegistry()
 
 
 # ---------------------------------------------------------------------------

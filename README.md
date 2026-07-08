@@ -193,8 +193,11 @@ tokencoin wallet export
 # Import from BIP39 mnemonic
 tokencoin wallet import "abandon ability able about above absent ..."
 
-# Start mining (CPU, GPU, or Apple Silicon — auto-detected)
-tokencoin mine start --model phi3-mini
+# Start mining with any Ollama model (CPU, GPU, or Apple Silicon — auto-detected)
+tokencoin mine start --model phi3:mini
+tokencoin mine start --model llama3.2:3b
+tokencoin mine start --model mistral:7b
+tokencoin mine start --model deepseek-r1:70b
 
 # Check mining status (backend, hardware, TKC rate)
 tokencoin mine status
@@ -221,18 +224,18 @@ TokenCoin exposes a **unified, OpenAI-compatible API** that routes inference req
 tokencoin api start --port 8080
 ```
 
-**Chat completion** (routed to distributed miners):
+**Chat completion** (routed to distributed miners — any Ollama model works):
 ```bash
 curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "phi3-mini",
+    "model": "phi3:mini",
     "messages": [{"role": "user", "content": "What is TokenCoin?"}],
     "max_tokens": 128
   }'
 ```
 
-**Embeddings**:
+**Embeddings** (any Ollama embedding model works):
 ```bash
 curl http://localhost:8080/v1/embeddings \
   -H "Content-Type: application/json" \
@@ -444,21 +447,21 @@ ollama pull llama3.2:3b
 
 ### Supported Models
 
-Models are auto-selected based on available memory (RAM for CPU, VRAM for GPU):
+TokenCoin accepts **any Ollama model** — there is no hardcoded allowlist. The
+[`ModelRegistry`](tokencoin/mining/ollama_miner.py:818) dynamically resolves model names
+and auto-estimates memory requirements, parameter counts, and inference type from the
+model tag.
 
-| Model | Min Memory | Type | Use Case |
-|---|---|---|---|
-| `all-minilm` | 1 GB | Embedding | Lightweight CPU mining |
-| `nomic-embed-text` | 2 GB | Embedding | CPU-friendly embedding |
-| `tinyllama` | 3 GB | LLM | Entry-level LLM mining |
-| `phi3-mini` | 4 GB | LLM | Default — CPU & GPU |
-| `llama3.2-3b` | 4 GB | LLM | Small LLM, fast inference |
-| `phi3-small` | 6 GB | LLM | Medium LLM |
-| `mistral-7b` | 8 GB | LLM | Popular 7B model |
-| `llama3.1-8b` | 8 GB | LLM | Meta's 8B model |
-| `gemma2-9b` | 10 GB | LLM | Google's 9B model |
-| `mixtral-8x7b` | 32 GB | LLM | Mixture of experts |
-| `llama3.1-70b` | 40 GB | LLM | Large model, high-end GPU |
+**Model name format:** `name:tag` (e.g. `llama3.2:3b`, `mistral:7b`, `deepseek-r1:70b`)
+
+| Tag Pattern | Example | Estimated Params |
+|---|---|---|
+| `{N}b` | `7b`, `70b`, `1.5b` | N billion |
+| `{N}x{M}b` (MoE) | `8x7b`, `8x22b` | ~N×M×0.7 billion |
+| `mini` / `small` / `large` | `phi3:mini` | 3.8 / 7.0 / 70.0 billion |
+
+Memory is estimated at ~4 GB base + ~0.5 GB per billion parameters (Q4 quantized).
+The miner will warn if your hardware has insufficient memory for the selected model.
 
 ### Docker Deployment
 

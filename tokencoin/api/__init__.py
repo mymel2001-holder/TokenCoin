@@ -29,7 +29,7 @@ from aiohttp import web
 
 from tokencoin.config import CONFIG
 from tokencoin.mining.ollama_miner import (
-    OllamaManager, OllamaModel, OLLAMA_MODELS,
+    OllamaManager, OllamaModel, OLLAMA_MODELS, MODEL_REGISTRY,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,10 +158,7 @@ class JobDistributor:
 
     async def _try_local_mining(self, job: APIJob) -> bool:
         """Try to process the job locally."""
-        model = OLLAMA_MODELS.get(job.model)
-        if not model:
-            logger.warning(f"Unknown model for local mining: {job.model}")
-            return False
+        model = MODEL_REGISTRY.get(job.model)
 
         if not self.ollama.hardware.can_run_model(model):
             logger.debug(f"Local hardware can't run {job.model}, skipping")
@@ -396,7 +393,7 @@ class OpenAIServer:
             return web.json_response({"error": "Unauthorized"}, status=401)
 
         models = []
-        for name, model in OLLAMA_MODELS.items():
+        for name, model in MODEL_REGISTRY.items():
             models.append({
                 "id": name,
                 "object": "model",
@@ -433,12 +430,8 @@ class OpenAIServer:
         temperature = body.get("temperature", CONFIG.ollama.inference_temperature)
         stream = body.get("stream", False)
 
-        # Validate model
-        if model_name not in OLLAMA_MODELS:
-            return web.json_response({
-                "error": f"Model '{model_name}' not found",
-                "available_models": list(OLLAMA_MODELS.keys()),
-            }, status=400)
+        # Validate model — any Ollama model is accepted
+        model = MODEL_REGISTRY.get(model_name)
 
         # Convert messages to a single prompt
         prompt = self._messages_to_prompt(messages)
@@ -552,11 +545,8 @@ class OpenAIServer:
         if isinstance(input_text, list):
             input_text = " ".join(input_text)
 
-        if model_name not in OLLAMA_MODELS:
-            return web.json_response({
-                "error": f"Model '{model_name}' not found",
-                "available_models": list(OLLAMA_MODELS.keys()),
-            }, status=400)
+        # Any Ollama embedding model is accepted
+        model = MODEL_REGISTRY.get(model_name)
 
         # Create embedding job
         job = APIJob(
@@ -594,7 +584,7 @@ class OpenAIServer:
                 "gpu": hw.gpu_name if hw.has_gpu else None,
                 "vram_gb": hw.vram_total_gb if hw.has_gpu else None,
             },
-            "models_available": list(OLLAMA_MODELS.keys()),
+            "models_available": list(MODEL_REGISTRY.keys()),
             "jobs_pending": sum(
                 1 for j in self.distributor.jobs.values()
                 if j.status == JobStatus.PENDING
