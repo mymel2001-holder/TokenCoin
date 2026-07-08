@@ -1,0 +1,60 @@
+# TokenCoin .gitignore
+
+# Private keys and wallet data
+*.key
+*.wallet
+*.seed
+*.pem
+*.p12
+*.pfx
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Dependencies installed within project structure
+node_modules/
+vendor/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.so
+*.dylib
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+/var/
+/tmp/
+
+# Docker artifacts (NIM containers are pulled dynamically)
+docker-compose.override.yml
+
+# Network data
+*.onion
+*.torrc
+dht_cache/
+peer_store/
+
+# Blockchain data (local testnet)
+blockchain_data/
+testnet_data/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
