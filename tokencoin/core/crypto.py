@@ -164,6 +164,19 @@ def base32_decode(s: str) -> bytes:
     return bytes(result)
 
 
+def base32_to_int(s: str) -> int:
+    """Convert a base32 string (or any string) to an integer by mapping its characters."""
+    val = 0
+    for char in s.lower():
+        idx = BASE32_ALPHABET.find(char)
+        if idx != -1:
+            val = (val << 5) | idx
+        else:
+            val = (val << 8) | ord(char)
+    return val
+
+
+
 # ---------------------------------------------------------------------------
 # Pedersen Commitments (RingCT)
 # ---------------------------------------------------------------------------

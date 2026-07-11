@@ -334,7 +334,7 @@ class Blockchain:
         self.state = BlockchainState()
         self.orphan_blocks: Dict[bytes, Block] = {}  # Blocks waiting for parent
         self.mempool: List[Transaction] = []
-        self._lock = asyncio.Lock() if 'asyncio' in dir() else None
+        self._lock = asyncio.Lock()
 
     def create_genesis_block(self) -> Block:
         """Create the genesis block."""

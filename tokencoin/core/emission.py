@@ -197,11 +197,12 @@ class EmissionCurve:
         supply and reward rates.
         """
         supply = current_supply_atomic
-        for _ in range(num_blocks):
+        for i in range(num_blocks):
             reward = self.block_reward(supply)
             if reward <= self.params.tail_emission_atomic:
-                # Once at tail emission, it's linear
-                supply += reward * (num_blocks - _)
+                # Once at tail emission, it's linear for the remaining blocks
+                remaining = num_blocks - i
+                supply += reward * remaining
                 break
             supply += reward
         return supply
@@ -288,9 +289,8 @@ class EmissionCurve:
         supply = self.params.base_supply_atomic
         schedule = []
 
-        # Sample logarithmically to show the curve shape
+        # Sample adaptively to show the curve shape
         block = 0
-        step = 1
         while block < 10_000_000 and len(schedule) < num_samples:
             reward = self.block_reward(supply)
             schedule.append({
@@ -298,21 +298,23 @@ class EmissionCurve:
                 "reward_tkc": atomic_to_tkc(reward),
                 "supply_tkc": atomic_to_tkc(supply),
             })
-            supply += reward
-            block += 1
-            # Adaptive step size for sampling
-            if block < 1000:
-                step = 100
-            elif block < 100_000:
-                step = 1000
-            elif block < 10_000_000:
-                step = 10_000
-            else:
-                step = 100_000
 
             if reward <= self.params.tail_emission_atomic:
                 # Once at tail emission, we can stop
                 break
+
+            # Adaptive step size for sampling — advance supply by `step` blocks
+            if block < 1000:
+                step = 1
+            elif block < 100_000:
+                step = 100
+            elif block < 1_000_000:
+                step = 1_000
+            else:
+                step = 10_000
+
+            supply = self.supply_after_blocks(supply, step)
+            block += step
 
         return schedule
 

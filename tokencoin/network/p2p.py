@@ -29,7 +29,7 @@ import ipaddress
 
 from tokencoin.config import CONFIG
 from tokencoin.core.crypto import (
-    PublicKey, PrivateKey, KeyPair, base32_encode, base32_decode,
+    PublicKey, PrivateKey, KeyPair, base32_encode, base32_decode, base32_to_int,
 )
 from tokencoin.network.mining_p2p import MiningP2PSubnet
 
@@ -201,7 +201,7 @@ class KBucket:
         return any(p.node_id == node_id for p in self.peers)
 
     def distance(self, node_id: str) -> int:
-        return int(self.min_key) ^ int(node_id[:8], 32)
+        return int(self.min_key) ^ base32_to_int(node_id[:8])
 
 
 class DHT:
@@ -212,7 +212,7 @@ class DHT:
 
     def __init__(self, node_id: str):
         self.node_id = node_id
-        self.node_id_int = int(node_id[:8], 32)
+        self.node_id_int = base32_to_int(node_id[:8])
         self.k = CONFIG.network.dht_kademlia_k
         self.buckets: List[KBucket] = []
         self._init_buckets()
@@ -228,7 +228,7 @@ class DHT:
 
     def _bucket_index(self, node_id: str) -> int:
         """Find the appropriate bucket for a node ID."""
-        target_int = int(node_id[:8], 32)
+        target_int = base32_to_int(node_id[:8])
         xor_dist = self.node_id_int ^ target_int
         if xor_dist == 0:
             return 0
@@ -259,9 +259,9 @@ class DHT:
 
     def find_nearest(self, target_id: str, count: int = 8) -> List[PeerIdentity]:
         """Find the k nearest peers to a target ID."""
-        target_int = int(target_id[:8], 32)
+        target_int = base32_to_int(target_id[:8])
         all_peers = list(self._known_peers.values())
-        all_peers.sort(key=lambda p: int(p.node_id[:8], 32) ^ target_int)
+        all_peers.sort(key=lambda p: base32_to_int(p.node_id[:8]) ^ target_int)
         return all_peers[:count]
 
     def get_alive_peers(self, max_age: float = 300) -> List[PeerIdentity]:
@@ -333,7 +333,7 @@ class P2PTransport:
             finally:
                 writer.close()
 
-        self._server = await asyncio.start_server(handle_connection, host=host)
+        self._server = await asyncio.start_server(handle_connection, host=host, port=port)
         self._port = self._server.sockets[0].getsockname()[1]
         logger.info(f"P2P node listening on {host}:{self._port}")
         return self._port
@@ -492,9 +492,13 @@ class PeerDiscovery:
     def add_seed_address(self, host: str, port: int, node_id: str):
         """Add a known peer address (from config or previous session)."""
         self._known_addresses[node_id] = (host, port)
+        try:
+            raw_key = base32_decode(node_id)[:32]
+        except ValueError:
+            raw_key = hashlib.sha3_256(node_id.encode()).digest()
         peer = PeerIdentity(
             node_id=node_id,
-            public_key=PublicKey(point=base32_decode(node_id)[:32]),
+            public_key=PublicKey(point=raw_key),
             addresses=[f"/tcp/{host}:{port}"],
         )
         self.dht.add_peer(peer)
@@ -670,7 +674,7 @@ class P2PNode:
         await self.transport.stop()
         logger.info("P2P node stopped")
 
-    async def connect_to_peer(self, host: str, port: int, node_id: str):
+    async def connect_to_peer(self, host: str, port: int, node_id: str) -> bool:
         """Connect to a specific peer."""
         success = await self.transport.connect(host, port, node_id)
         if success:
@@ -681,7 +685,11 @@ class P2PNode:
                 payload=struct.pack("!d", time.time()),
                 sender_id=self.node_id,
             )
-            await self.transport.send(node_id, msg)
+            try:
+                await self.transport.send(node_id, msg)
+            except ConnectionError:
+                pass
+        return success
 
     async def broadcast_transaction(self, tx_hash: str, tx_data: bytes):
         """Broadcast a transaction to the network."""
@@ -739,9 +747,13 @@ class P2PNode:
             for peer_info in peer_list:
                 node_id = peer_info["node_id"]
                 if node_id not in self.dht._known_peers:
+                    try:
+                        raw_key = base32_decode(node_id)[:32]
+                    except ValueError:
+                        raw_key = hashlib.sha3_256(node_id.encode()).digest()
                     peer = PeerIdentity(
                         node_id=node_id,
-                        public_key=PublicKey(point=base32_decode(node_id)[:32]),
+                        public_key=PublicKey(point=raw_key),
                         addresses=peer_info.get("addresses", []),
                     )
                     self.dht.add_peer(peer)

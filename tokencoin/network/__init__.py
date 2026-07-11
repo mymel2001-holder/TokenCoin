@@ -28,7 +28,7 @@ from typing import Dict, List, Optional, Set, Tuple, Callable, Any
 
 from tokencoin.config import CONFIG
 from tokencoin.core.crypto import (
-    PublicKey, PrivateKey, KeyPair, base32_encode, base32_decode
+    PublicKey, PrivateKey, KeyPair, base32_encode, base32_decode, base32_to_int
 )
 
 # Re-export the MiningP2PSubnet so it can be imported from tokencoin.network
@@ -177,7 +177,7 @@ class DHTNode:
     def _bucket_index(self, target_id: str) -> int:
         """Compute the Kademlia bucket index for a target node ID."""
         # XOR distance, then leading zero bits determine bucket
-        xor_val = int(self.node_id, 32) ^ int(target_id, 32)
+        xor_val = base32_to_int(self.node_id) ^ base32_to_int(target_id)
         if xor_val == 0:
             return 0
         return xor_val.bit_length() - 1
@@ -234,8 +234,9 @@ class DHTNode:
     def find_nearest_peers(self, target_id: str, count: int = 8) -> List[PeerInfo]:
         """Find the nearest peers to a target node ID."""
         all_peers = list(self.peer_map.values())
+        target_int = base32_to_int(target_id)
         all_peers.sort(
-            key=lambda p: int(self.node_id, 32) ^ int(p.node_id, 32)
+            key=lambda p: base32_to_int(p.node_id) ^ target_int
         )
         return all_peers[:count]
 
@@ -369,7 +370,7 @@ class P2PTransport:
                 await writer.wait_closed()
 
         self._server = await asyncio.start_server(
-            handle_connection, host=host
+            handle_connection, host=host, port=port
         )
         port = self._server.sockets[0].getsockname()[1]
         logger.info(f"P2P transport listening on {host}:{port}")
@@ -464,10 +465,16 @@ class PeerManager:
         for node_addr in bootstrap_nodes:
             try:
                 addr = NodeAddress(raw=node_addr)
+                try:
+                    raw_key = base32_decode(node_addr)[:32]
+                except ValueError:
+                    # Not a valid Base32 address — derive a placeholder key
+                    import hashlib as _hashlib
+                    raw_key = _hashlib.sha3_256(node_addr.encode()).digest()
                 peer = PeerInfo(
                     node_id=node_addr,
                     address=addr,
-                    public_key=PublicKey(point=base32_decode(node_addr)[:32]),
+                    public_key=PublicKey(point=raw_key),
                     last_seen=time.time(),
                     reputation=0.5,
                 )
